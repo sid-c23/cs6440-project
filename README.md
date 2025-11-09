@@ -42,5 +42,5 @@ The frontend website should be viewable at `http://localhost:5173/`
 * The individual pages should be located in `frontend/views`
 * Each file is used as a single file component, and examples can be found at
 [https://vuejs.org/examples/#hello-world](https://vuejs.org/examples/#hello-world)
-* For CSS styling, we plan on using [TailwindCSS](https://tailwindcss.com/docs/installation/using-vite).
+* For CSS styling, we plan on using [https://primevue.org/introduction/](https://primevue.org/introduction/).
 * For API calls, we use [axios](https://github.com/axios/axios).
