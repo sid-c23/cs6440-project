@@ -38,43 +38,43 @@ app.add_middleware(
 
 db_dependency = Annotated[Session, Depends(get_db)]
 
-@app.get("/")
+@app.get("/api")
 def read_root():
     return {"Hello": "World"}
 
 # Get the list of users from the database
-@app.get("/users")
+@app.get("/api/users")
 async def get_users(db: db_dependency):
     return db.query(User).all()
 
 # Get info for a specific user
-@app.get("/users/{user_id}")
+@app.get("/api/users/{user_id}")
 async def get_user(db: db_dependency, user_id: str):
     user = db.query(User).filter(User.id == user_id).first()
     if user is not None:
         return user
     raise HTTPException(status_code=200, detail="User not found")
 
-@app.post("/users", status_code=201)
+@app.post("/api/users", status_code=201)
 async def create_user(db: db_dependency, user_request: schemas.UserRequest):
     new_user = User(**user_request.model_dump())
     db.add(new_user)
     db.commit()
 
-@app.get("/migraines")
+@app.get("/api/migraines")
 async def get_migraines(db: db_dependency, user_id: str):
     migraines = db.query(Event).filter(Event.user_id == user_id, Event.event_type == EventType.migraine).all()
     if migraines is not None:
         return migraines
     return []
 
-@app.post("/event")
+@app.post("/api/event")
 async def create_event(db: db_dependency, user_id: str, event_request: schemas.EventRequest):
     new_event = Event(user_id=user_id, **event_request.model_dump())
     db.add(new_event)
     db.commit()
 
-@app.get("/triggers")
+@app.get("/api/triggers")
 async def get_triggers(db: db_dependency, user_id: str):
     other_events = db.query(Event).filter(Event.user_id == user_id, Event.event_type != EventType.migraine).all()
     if other_events is not None:
@@ -86,7 +86,7 @@ def get_random_date_between(start_date: datetime.date, end_date: datetime.date):
     rand_days = random.randrange(days_between)
     return start_date + datetime.timedelta(days=rand_days)
 
-@app.post("/populate", status_code=200)
+@app.post("/api/populate", status_code=200)
 async def populate_data(db: db_dependency):
     """
     Populates the database with a fixed set of data.
