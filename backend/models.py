@@ -1,27 +1,29 @@
+from typing import List
 from .database import Base
-from sqlalchemy import TIMESTAMP, Column, String, Text, Enum, Integer
+from sqlalchemy import TIMESTAMP, Column, String, Text, Enum, Integer, ForeignKey
+from sqlalchemy.orm import mapped_column, Mapped, relationship
 from sqlalchemy.sql import func
 from fastapi_utils.guid_type import GUID, GUID_DEFAULT_SQLITE
 import enum
 
 # Other classes
-class Severity(enum.Enum):
+class Severity(enum.IntEnum):
     low = 1
     low_med = 2
     med = 3
     med_high = 4
     high = 5
 
-class EventType(enum.Enum):
+class EventType(str, enum.Enum):
     migraine = 'migraine'
     stress = 'stress'
     sleep = 'sleep'
     meals = 'meal'
 
-class Unit(enum.Enum):
-    hours = 1
-    minutes = 2
-    number = 3
+class Unit(str, enum.Enum):
+    hours = 'hours'
+    minutes = 'minutes'
+    number = 'number' 
 # End Other classes
 
 # Model definitions
@@ -31,6 +33,7 @@ class User(Base):
     __tablename__ = 'users'
     id = Column(GUID, primary_key=True, default=GUID_DEFAULT_SQLITE)
     name = Column(String, nullable=False)
+    events: Mapped[List["Event"]] = relationship(back_populates="user")
     # Metadata
     creation_timestamp = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
 
@@ -45,6 +48,8 @@ class Event(Base):
     code = Column(String, primary_key=True, nullable=False)
     event_type = Column('event_type', Enum(EventType), primary_key=True, nullable=False)
     id = Column(GUID, primary_key=True, default=GUID_DEFAULT_SQLITE)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete='CASCADE'))
+    user: Mapped["User"] = relationship(back_populates="events")
     # Data Columns
     severity = Column('severity', Enum(Severity), nullable=True)
     numerical_value = Column(Integer, nullable=True)

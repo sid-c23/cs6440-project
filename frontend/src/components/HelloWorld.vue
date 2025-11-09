@@ -1,9 +1,6 @@
-<script lang="ts">
-export default {
-  data: () => ({
-    msg: '',
-  }),
-}
+<script setup lang="ts">
+import {ref} from 'vue'
+const msg = ref('hi');
 </script>
 
 <template>

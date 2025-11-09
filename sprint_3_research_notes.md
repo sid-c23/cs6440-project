@@ -1,5 +1,7 @@
 RESEARCH ON MIGRAINE TRIGGERS
-****Highlighted are most common triggers shared across research****
+
+**Highlighted are most common triggers shared across research**
+
 Resource: Andress-Rothrock, D., King, W., & Rothrock, J. (2009). An Analysis of Migraine Triggers in a Clinic-Based Population. Headache: The Journal of Head and Face Pain, 50(8), 1366–1370. https://doi.org/10.1111/j.1526-4610.2010.01753.x
 Most common trigger reported: emotional stress (followed by too much/little sleep, odors, and missing meals)
 Those w/ chronic migraines vs episodic migraine similarly report triggers
@@ -42,7 +44,7 @@ Exercise
 Remedial Medication (NSAIDs, Prescription)
   -Daily yes/no
   
-Hypothesis (relationships between triggers :
+Hypothesis (relationships between triggers) :
 Stress/Migraine
   Null: Daily stress level has no impact on migraine occurrence, daily stress level has no impact on migraine severity
 Hypothesis: Higher than average stress level increases probability of migraine occurrence/higher migraine intensity
@@ -75,7 +77,7 @@ Examples (from labs):
      //status (should be set to "draft")
      //intent (should be set to "order")
      //subject (should be a reference to the current patient)
-     //medicationCodeableConcept.text (should be set to the string passed in by the form
+     //medicationCodeableConcept.text (should be set to the string passed in by the form)
      resourceType: "MedicationRequest",
      status: "draft",
      intent: "order",

@@ -1,3 +1,8 @@
+# Backend
+app.db
+*.pyc
+# Frontend
+
 # Logs
 logs
 *.log
