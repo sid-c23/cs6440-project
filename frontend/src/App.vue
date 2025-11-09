@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router';
-import HelloWorld from './components/HelloWorld.vue';
-import Menubar from 'primevue/menubar';
+import { RouterView } from 'vue-router';
+import MyNavbar from './components/MyNavbar.vue';
 import { ref, onMounted } from 'vue';
 import axios from 'axios';
 
@@ -22,11 +21,9 @@ onMounted(async () => {
         <RouterLink to="/">Home</RouterLink>
         <RouterLink to="/about">About</RouterLink>
       </nav> -->
-  {{ users }}
+      <MyNavbar />
   </header>
-    <div class="wrapper">
-      <HelloWorld msg="This is the message" />
-    </div>
+  {{ users }}
   <RouterView />
 </template>
 
