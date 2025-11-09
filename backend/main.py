@@ -5,6 +5,8 @@ from typing import Union, Annotated
 from sqlalchemy.orm import Session
 from fastapi import FastAPI, Depends, HTTPException, Path
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from .database import engine, get_db
 from .models import Event, User, Base, EventType, Severity, Unit
 from . import schemas
@@ -146,3 +148,11 @@ async def populate_data(db: db_dependency):
             db.add(s)
     db.commit()
     return {'status': "OK"}
+
+app.mount("/assets", StaticFiles(directory="dist/assets"), name="assets")
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    if ".." in full_path:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse("dist/index.html")
