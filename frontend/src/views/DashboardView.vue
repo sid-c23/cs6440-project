@@ -55,12 +55,68 @@
       <section class="daily-record">
         <div class="record-box">
           <h3>Your Daily Record</h3>
-          <p>Did you experience a migraine today?</p>
-          <label><input type="radio" name="migraine" /> Yes</label>
-          <label><input type="radio" name="migraine" /> No</label>
-          <button class="next-btn">Next</button>
+          <div v-if="questions.length">
+            <p>{{ questions[idx].text }}</p>
+
+            <div v-if="questions[idx].type == 'radio'">
+              <label
+                v-for="option in questions[idx].options"
+                :key="option"
+              >
+                <input
+                  type="radio"
+                  :name="'question-' + idx"
+                  :value="option"
+                  v-model="answers[idx]"
+                />
+                {{ option }}
+              </label>
+            </div>
+
+            <div v-else-if="questions[idx].type === 'text'">
+              <input
+                type="text"
+                v-model="answers[idx]"
+                :placeholder="questions[idx].placeholder"
+              />
+            </div>
+
+            <div v-else-if="questions[idx].type === 'number'">
+              <input
+                type="number"
+                v-model="answers[idx]"
+                :placeholder="questions[idx].placeholder"
+              />
+            </div>
+
+            <div v-else-if="questions[idx].type === 'date'">
+              <input
+                type="date"
+                v-model="answers[idx]"
+                :placeholder="questions[idx].placeholder"
+              />
+            </div>
+
+            <div v-else-if="questions[idx].type === 'time'">
+              <input
+                type="time"
+                v-model="answers[idx]"
+                :placeholder="questions[idx].placeholder"
+              />
+            </div>
+
+            <button
+              class="next-btn"
+              :disabled="!answers[idx]"
+              @click="nextQuestion">
+              {{ idx < questions.length - 1 ? 'Next' : 'Submit'}}
+            </button>
+          </div>
         </div>
 
+
+        <!--
+        < add back in later with functionality > 
         <div class="week-box">
           <h3>This Week</h3>
           <ul>
@@ -69,6 +125,7 @@
             </li>
           </ul>
         </div>
+        -->
       </section>
     </main>
   </div>
@@ -107,9 +164,51 @@ onMounted(async () => {
 })
 
 const weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-const migraineDays = ref([true, true, false, true, false, false, false])
+const migraineDays = ref([false, false, false, false, false, false, false])
 function toggleDay(index) {
   migraineDays.value[index] = !migraineDays.value[index]
+}
+
+//daily record box questions - to be recorded under user observations
+const questions = ref([
+    { text: 'Please select the date you are logging', type: 'date'},
+    { text: 'Did you experience a migraine today?', type: 'radio', options: ['Yes', 'No']},
+    { text: 'What time did the migraine occur?', type: 'time'},
+    { text: 'How would you rate your migraine intensity?', type: 'radio', options: ['1: Not at all severe', '2: Somewhat severe', '3: Moderately severe', '4: Very severe', '5: Extremely severe']},
+    { text: 'How stressed were you today?', type: 'radio', options: ['1: Not at all stressed', '2: Somewhat stressed', '3: Moderately stressed', '4: Very stressed', '5: Extremely stressed']},
+    { text: 'How many hours did you sleep?', type: 'number', placeholder: 'Enter number of hours'},
+    { text: 'How many meals did you eat today?', type: 'number', placeholder: 'Enter number of meals'},
+    { text: 'Did you exercise today?' , type: 'radio', options: ['Yes', 'No']},
+    { text: 'Did you take any remedial medication today? Eg: Aspirin, Excedrin, Prescribed Medications', type: 'radio', options: ['Yes', 'No']}  
+])
+
+const today = new Date().toISOString().split('T')[0]
+const answers = ref({ 0: today })
+const idx = ref(0)
+
+function nextQuestion() {
+    //store migraine time as datetime instead of time (easier for analytics)
+    if (
+        idx.value > 0 &&
+        questions.value[idx.value].type === 'time' &&
+        questions.value[idx.value - 1].type === 'date'
+    ) {
+        const date = answers.value[idx.value - 1]
+        const time = answers.value[idx.value]
+        if (date && time) {
+            const dt = `${date}T${time}`
+            answers.value['migraine_datetime'] = dt
+            console.log('Migraine datetime:', dt)
+        }
+    }
+    if (idx.value < questions.value.length - 1) {
+        idx.value++
+    } else {
+        console.log('All answers:', answers.value)
+        alert('Thanks for completing your daily record!')
+        idx.value = 0 // option to add response for another day
+        answers.value = { 0: new Date().toISOString().split('T')[0]}  //resets questions instead of keeping answers
+    }
 }
 </script>
 
@@ -250,6 +349,14 @@ function toggleDay(index) {
 .bubble {
   font-size: 1.2rem;
   user-select: none;
+}
+.record-box label {
+  display: block;
+  margin: 0.3rem 0;
+  cursor: pointer;
+}
+.record-box label input {
+  margin-right: 0.4rem;
 }
 </style>
 
