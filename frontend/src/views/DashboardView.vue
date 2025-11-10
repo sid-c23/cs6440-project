@@ -116,7 +116,7 @@
 
 
         <!--
-        < add back in later with functionality > 
+        < add back in later with functionality >
         <div class="week-box">
           <h3>This Week</h3>
           <ul>
@@ -145,14 +145,14 @@ const error = ref(null)
 
 onMounted(async () => {
   try {
-    const resUser = await fetch(`http://127.0.0.1:8000/api/users/${userId}`)
+    const resUser = await fetch(`/api/users/${userId}`)
     if (!resUser.ok) throw new Error('Failed to load user')
     user.value = await resUser.json()
 
-    const resMigraines = await fetch(`http://127.0.0.1:8000/api/migraines?user_id=${userId}`)
+    const resMigraines = await fetch(`/api/migraines?user_id=${userId}`)
     if (resMigraines.ok) migraines.value = await resMigraines.json()
 
-    const resTriggers = await fetch(`http://127.0.0.1:8000/api/triggers?user_id=${userId}`)
+    const resTriggers = await fetch(`/api/triggers?user_id=${userId}`)
     if (resTriggers.ok) triggers.value = await resTriggers.json()
 
   } catch (err) {
@@ -179,7 +179,7 @@ const questions = ref([
     { text: 'How many hours did you sleep?', type: 'number', placeholder: 'Enter number of hours'},
     { text: 'How many meals did you eat today?', type: 'number', placeholder: 'Enter number of meals'},
     { text: 'Did you exercise today?' , type: 'radio', options: ['Yes', 'No']},
-    { text: 'Did you take any remedial medication today? Eg: Aspirin, Excedrin, Prescribed Medications', type: 'radio', options: ['Yes', 'No']}  
+    { text: 'Did you take any remedial medication today? Eg: Aspirin, Excedrin, Prescribed Medications', type: 'radio', options: ['Yes', 'No']}
 ])
 
 const today = new Date().toISOString().split('T')[0]
