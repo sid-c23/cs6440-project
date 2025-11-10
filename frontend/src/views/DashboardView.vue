@@ -1,3 +1,42 @@
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+
+const route = useRoute()
+const userId = route.params.userId
+const user: any = ref(null)
+const migraines = ref([])
+const triggers = ref([])
+const loading = ref(true)
+const error = ref(null)
+
+onMounted(async () => {
+  try {
+    const resUser = await fetch(`/api/users/${userId}`)
+    if (!resUser.ok) throw new Error('Failed to load user')
+    user.value = await resUser.json()
+
+    const resMigraines = await fetch(`/api/migraines?user_id=${userId}`)
+    if (resMigraines.ok) migraines.value = await resMigraines.json()
+
+    const resTriggers = await fetch(`/api/triggers?user_id=${userId}`)
+    if (resTriggers.ok) triggers.value = await resTriggers.json()
+
+  } catch (err) {
+    console.error(err)
+    error.value = 'Error loading dashboard data.'
+  } finally {
+    loading.value = false
+  }
+})
+
+const weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+const migraineDays = ref([true, true, false, true, false, false, false])
+function toggleDay(index) {
+  migraineDays.value[index] = !migraineDays.value[index]
+}
+</script>
+
 <template>
   <div class="dashboard">
     <!-- Sidebar -->
@@ -131,6 +170,7 @@
   </div>
 </template>
 
+<<<<<<< HEAD
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
@@ -212,6 +252,8 @@ function nextQuestion() {
 }
 </script>
 
+=======
+>>>>>>> 2a21e3af61a5a90bcd26df68721b4c7e1d34bc2c
 <style scoped>
 .dashboard {
   display: flex;

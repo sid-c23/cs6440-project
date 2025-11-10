@@ -17,6 +17,10 @@ const router = createRouter({
       component: DashboardView,
       props: true,
     },
+    {
+      path: '/',
+      redirect: '/users'
+    }
   ],
 })
 

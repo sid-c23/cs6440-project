@@ -10,7 +10,3 @@ html,body
 .p-component, .p-component * {
   font-family: 'Inter var', 'Inter', sans-serif;
 }
-
-#app {
-  margin: 10%;
-}
