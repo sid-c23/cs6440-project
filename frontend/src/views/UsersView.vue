@@ -12,8 +12,12 @@
         @keyup.enter="goToDashboard(user.id)"
       >
         <p class="user-name">{{ user.name }}</p>
-        <p class="user-email">{{ user.email }}</p>
-        <p class="user-dob">DOB: {{ user.dob }}</p>
+
+        <!-- add dob and email in later once in pt jsons -->
+        <!-- <p class="user-email">{{ user.email }}</p> -->
+        <!-- <p class="user-dob">DOB: {{ user.dob }}</p> -->
+
+        <p class="user-dob">Patient Creation Timestamp: {{ new Date(user.creation_timestamp).toLocaleString() }}</p>
       </li>
     </ul>
   </div>
@@ -21,13 +25,28 @@
 
 <script setup>
 import { useRouter } from 'vue-router'
+import { ref, onMounted } from 'vue'
 
-// Placeholder user data for demo
-const users = [
-  { id: 1, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' },
-  { id: 2, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' },
-  { id: 3, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' }
-]
+
+// updating to pull users from backend
+//const users = [
+//  { id: 1, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' },
+//  { id: 2, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' },
+//  { id: 3, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' }
+// ]
+
+const users = ref([])
+
+onMounted(async () => {
+  try {
+    const response = await fetch('http://127.0.0.1:8000/api/users')
+    if (!response.ok) throw new Error('failure getting users from backend')
+    const patients = await response.json()
+    users.value = patients.sort((a, b) => a.name.localeCompare(b.name))
+  } catch (error) {
+    console.error('user load error:', error)
+  }
+})
 
 const router = useRouter()
 
@@ -38,7 +57,6 @@ function goToDashboard(userId) {
 
 <style scoped>
 .users-page {
-  background-color: white;
   padding: 2rem;
   font-family: Arial, sans-serif;
   color: #004d40;

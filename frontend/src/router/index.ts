@@ -12,9 +12,10 @@ const router = createRouter({
       component: UsersView,
     },
     {
-      path: '/dashboard',
+      path: '/dashboard/:userId',
       name: 'dashboard',
       component: DashboardView,
+      props: true,
     },
   ],
 })

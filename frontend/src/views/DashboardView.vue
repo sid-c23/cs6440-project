@@ -7,14 +7,25 @@
         <span class="title">MyMigraine<br />Management</span>
       </div>
 
-      <div class="user-info">
-        <div class="avatar">👤</div>
-        <div class="details">
-          <p class="name">First Name Placeholder</p>
-          <p class="email">emailplaceholder@gmail.com</p>
-          <p class="dob">DOB: 01/01/0000</p>
+      <template v-if="user">
+        <div class="user-info">
+            <div class="avatar">👤</div>
+            <div class="details">
+                <p class="name">{{ user.name }}</p>
+                <!-- replace with email -->
+                <p class="email">{{ user.id }}</p>
+                <!-- replace with dob -->
+                <p class="dob">Member Since: {{ new Date(user.creation_timestamp).toLocaleDateString() }}</p>
+            </div>
         </div>
-      </div>
+      </template>
+
+      <template v-else-if="loading">
+        <div>Loading user dashboard...</div>
+      </template>
+      <template v-else-if="error">
+        <div>{{ error }}</div>
+      </template>
     </aside>
 
     <!-- Main content -->
@@ -64,7 +75,36 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+
+const route = useRoute()
+const userId = route.params.userId
+const user = ref(null)
+const migraines = ref([])
+const triggers = ref([])
+const loading = ref(true)
+const error = ref(null)
+
+onMounted(async () => {
+  try {
+    const resUser = await fetch(`http://127.0.0.1:8000/api/users/${userId}`)
+    if (!resUser.ok) throw new Error('Failed to load user')
+    user.value = await resUser.json()
+
+    const resMigraines = await fetch(`http://127.0.0.1:8000/api/migraines?user_id=${userId}`)
+    if (resMigraines.ok) migraines.value = await resMigraines.json()
+
+    const resTriggers = await fetch(`http://127.0.0.1:8000/api/triggers?user_id=${userId}`)
+    if (resTriggers.ok) triggers.value = await resTriggers.json()
+
+  } catch (err) {
+    console.error(err)
+    error.value = 'Error loading dashboard data.'
+  } finally {
+    loading.value = false
+  }
+})
 
 const weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 const migraineDays = ref([true, true, false, true, false, false, false])
