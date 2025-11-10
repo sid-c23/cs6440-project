@@ -1,3 +1,35 @@
+<script setup lang="ts">
+import { useRouter } from 'vue-router'
+import { ref, onMounted } from 'vue'
+
+
+// updating to pull users from backend
+//const users = [
+//  { id: 1, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' },
+//  { id: 2, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' },
+//  { id: 3, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' }
+// ]
+
+const users: any = ref([])
+
+onMounted(async () => {
+  try {
+    const response = await fetch('/api/users')
+    if (!response.ok) throw new Error('failure getting users from backend')
+    const patients = await response.json()
+    users.value = patients.sort((a, b) => a.name.localeCompare(b.name))
+  } catch (error) {
+    console.error('user load error:', error)
+  }
+})
+
+const router = useRouter()
+
+function goToDashboard(userId) {
+  router.push(`/dashboard/${userId}`)
+}
+</script>
+
 <template>
   <div class="users-page">
     <h1>Users</h1>
@@ -22,38 +54,6 @@
     </ul>
   </div>
 </template>
-
-<script setup>
-import { useRouter } from 'vue-router'
-import { ref, onMounted } from 'vue'
-
-
-// updating to pull users from backend
-//const users = [
-//  { id: 1, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' },
-//  { id: 2, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' },
-//  { id: 3, name: 'First Name Last Name', email: 'email@example.com', dob: '01/01/0000' }
-// ]
-
-const users = ref([])
-
-onMounted(async () => {
-  try {
-    const response = await fetch('http://127.0.0.1:8000/api/users')
-    if (!response.ok) throw new Error('failure getting users from backend')
-    const patients = await response.json()
-    users.value = patients.sort((a, b) => a.name.localeCompare(b.name))
-  } catch (error) {
-    console.error('user load error:', error)
-  }
-})
-
-const router = useRouter()
-
-function goToDashboard(userId) {
-  router.push(`/dashboard/${userId}`)
-}
-</script>
 
 <style scoped>
 .users-page {
