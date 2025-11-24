@@ -2,7 +2,7 @@ import random
 import os
 import datetime
 
-from typing import Union, Annotated
+from typing import Union, Annotated, List, Dict, Any
 from sqlalchemy.orm import Session
 from fastapi import FastAPI, Depends, HTTPException, Path
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +11,12 @@ from fastapi.responses import FileResponse
 from .database import engine, get_db
 from .models import Event, User, Base, EventType, Severity, Unit
 from . import schemas
+
+from fhirclient import client
+from fhirclient.models.patient import Patient
+from fhirclient.models.observation import Observation
+from fhirclient.models.encounter import Encounter
+from fhirclient.models.fhirreference import FHIRReference
 
 Base.metadata.create_all(bind=engine)
 
@@ -88,6 +94,208 @@ def get_random_date_between(start_date: datetime.date, end_date: datetime.date):
     days_between = (end_date - start_date).days
     rand_days = random.randrange(days_between)
     return start_date + datetime.timedelta(days=rand_days)
+
+
+"""
+Next thing: use Fhir Client somehow
+
+A. Create Fhir compatible objects using the data we have (export function)
+    1. Read from database (just patients for now?)
+B. Use the objects and send to the HAPI demo fhir server
+    1. https://hapi.fhir.org/baseR4 
+"""
+
+def convert_user_to_fhir(user: User):
+    patient = Patient({
+        'active': True,
+        'identifier': [{
+            'use': 'usual',
+            'value': str(user.id)
+        }, {
+            'use': 'temp',
+            'value': 'mitigate-app'
+        }],
+        'name': [{
+            'use': 'official',
+            'text': user.name
+        }]
+    })
+    return patient
+
+def convert_event_to_fhir(event: Event):
+    return Observation({
+        'status': 'registered',
+        'code': {
+            'coding': [{
+                'system': event.system,
+                'code': event.code
+            }],
+            'text': event.event_type
+        },
+        'identifier': [
+            {
+                'use': 'usual',
+                'value': str(event.id)
+            },
+            {
+                'use': 'temp',
+                'value': 'mitigate-app'
+            }
+        ],
+        'valueCodeableConcept': {
+            'coding': [
+                {
+                    'system': 'severity',
+                    'code': str(event.severity)
+                },
+                {
+                    'system': 'value',
+                    'code': str(event.numerical_value)
+                },
+                {
+                    'system': 'unit',
+                    'code': str(event.numerical_unit)
+                }
+            ]
+        },
+        'note': [{
+            # 'time': FHIRDateTime(event.creation_timestamp.isoformat()),
+            'text': event.description
+        }]
+    })
+
+
+@app.get("/api/get_patient_fhir/{user_id}", status_code=200)
+async def get_patient_fhir(user_id: str):
+    settings = {
+        'app_id': 'mitigate_app',
+        'api_base': 'https://hapi.fhir.org/baseR4'
+    }
+    smart = client.FHIRClient(settings=settings)
+    search = Patient.where(struct={'identifier': user_id})
+    res = [r.as_json() for r in search.perform_iter(smart.server)]
+    return res
+        
+    # user = db.query(User).filter(User.id == user_id).first()
+    # patient = convert_user_to_patient(db, user)
+    # return {
+    #     'user': user,
+    #     'patient': patient.as_json()
+    # }
+
+# @app.post("/api/export_user_to_fhir/{user_id}", status_code=200)
+# async def export_user_to_fhir(db: db_dependency, user_id: str):
+#     user = db.query(User).filter(User.id == user_id).first()
+#     patient = convert_user_to_fhir(user)
+#     settings = {
+#         'app_id': 'mitigate_app',
+#         'api_base': 'https://hapi.fhir.org/baseR4'
+#     }
+#     smart = client.FHIRClient(settings=settings)
+#     created = patient.create(smart.server)
+#     return created
+
+@app.get("/api/get_patient_info_from_fhir/{user_id}", status_code=200)
+async def get_patient_info_from_fhir(user_id: str):
+    settings = {
+        'app_id': 'mitigate_app',
+        'api_base': 'https://hapi.fhir.org/baseR4'
+    }
+    smart = client.FHIRClient(settings=settings)
+    patients = Patient.where(struct={'identifier': user_id}).perform_resources(smart.server)
+    if not patients:
+        return {
+            "ok": False,
+            "error": f"No Patient found for identifier '{user_id}' on HAPI R4."
+        }
+
+    patient = patients[0]
+    patient_json = patient.as_json()
+
+    # 2) Fetch Observations linked to the Patient via subject reference
+    #    This is the canonical way to get observations for a patient:
+    #    GET [base]/Observation?subject=Patient/{patient_id}
+    #    (Reference-type search param per FHIR search.) [2](https://smilecdr.com/docs/fhir_standard/fhir_search_references.html)
+    obs_search = Observation.where(struct={"subject": f"Patient/{patient.id}"})
+    observations = [obs.as_json() for obs in obs_search.perform_iter(smart.server)]
+
+    return {
+        "ok": True,
+        "patient": patient_json,
+        "observations": observations,
+        "counts": {
+            "patients": len(patients),
+            "observations": len(observations)
+        }
+    }
+
+
+
+@app.post("/api/export_patient_data_to_fhir/{user_id}", status_code=200)
+async def export_patient_data_to_fhir(db: db_dependency, user_id: str):
+    """
+    Exports all of a user's data (patient data and all observation data) to the demo HAPI FHIR server.
+    First, the Patient is created on the FHIR server.
+    Second, the Observation data is created on the FHIR server.
+    """
+    settings = {
+        'app_id': 'mitigate_app',
+        'api_base': 'https://hapi.fhir.org/baseR4'
+    }
+    # -- Pull local data
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return {"ok": False, "error": f"User {user_id} not found"}
+
+    events: List[Event] = db.query(Event).filter(Event.user_id == user_id).all()
+
+    # -- Build FHIRClient
+    smart = client.FHIRClient(settings=settings)
+
+    # -- Create or reuse Patient
+    patient_resource: Patient = convert_user_to_fhir(user)
+
+    existing_patients = Patient.where(struct={'identifier': user_id}).perform_resources(smart.server)
+
+    if existing_patients:
+            patient = existing_patients[0]
+            patient_id = patient['id']
+            reused = True
+    else:
+        patient = patient_resource.create(smart.server)    # POST /Patient
+        patient_id = patient['id']
+        reused = False
+
+    # -- Create Observations
+    created_obs_ids: List[str] = []
+    errors: List[Dict[str, Any]] = []
+
+    for ev in events:
+        try:
+            obs: Observation = convert_event_to_fhir(ev)
+            # Link Observation to Patient
+            obs.subject = FHIRReference({'reference': f'Patient/{patient_id}'})
+            created_obs = obs.create(smart.server)          # POST /Observation
+            created_obs_ids.append(created_obs)
+        except Exception as e:
+            errors.append({
+                "event_id": str(ev.id),
+                "error": str(e)
+            })
+
+    return {
+        "ok": True,
+        "patient": {
+            "id": patient_id,
+            "reused": reused,
+            "identifiers": [iden for iden in (patient['identifier'] or [])]
+        },
+        "observations": {
+            "created_count": len(created_obs_ids),
+            "ids": created_obs_ids
+        },
+        "errors": errors
+    }
 
 @app.get("/api/populate", status_code=200)
 async def populate_data(db: db_dependency):
