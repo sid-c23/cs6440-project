@@ -17,6 +17,10 @@
                 <!-- replace with dob -->
                 <p class="dob">Member Since: {{ new Date(user.creation_timestamp).toLocaleDateString() }}</p>
             </div>
+
+            <button class="exportRecords" @click="exportRecords">
+                Send migraine history to my doctor
+            </button>
         </div>
       </template>
 
@@ -42,16 +46,68 @@
       <section class="weekly-insights">
         <h2>Your Weekly Insights</h2>
         <div class="insights-box">
-          <div class="tabs">
-            <button>Migraines</button>
-            <button>Triggers</button>
-            <button>Preventions</button>
-          </div>
-          <div class="chart-placeholder">[Chart Placeholder]</div>
+            <div class="tabs">
+              <button 
+                :class="{ active: currTab === 'migraines' }"
+                @click="currTab = 'migraines'"
+              >Migraines</button>
+              <button 
+                :class="{ active: currTab === 'triggers' }"
+                @click="currTab = 'triggers'"
+              >Triggers</button>
+              <button 
+                :class="{ active: currTab === 'preventions' }"
+                @click="currTab = 'preventions'"
+              >Preventions</button>
+            </div>
+          <div class="chart-placeholder">
+
+              <!-- SWITCH BETWEEN VIEWS -->
+              <div v-show="currTab === 'migraines'">
+                <h3>Migraines This Week</h3>
+                <canvas id="migraineChart"></canvas>
+              </div>
+
+              <div v-if="currTab === 'triggers'">
+                <h3>Trigger Summary</h3>
+
+                <h4>Sleep</h4>
+                <ul>
+                  <li v-for="s in weeklyStats.sleep" :key="s.date">
+                    {{ new Date(s.date).toLocaleDateString() }} — Slept {{ s.hours }} hrs
+                  </li>
+                </ul>
+
+                <h4>Stress</h4>
+                <ul>
+                  <li v-for="s in weeklyStats.stress" :key="s.date">
+                    {{ new Date(s.date).toLocaleDateString() }} — Stress {{ s.rating }}/5
+                  </li>
+                </ul>
+              </div>
+
+              <div v-if="currTab === 'preventions'">
+                <h3>Preventions</h3>
+
+                <h4>Exercise</h4>
+                <ul>
+                  <li v-for="e in weeklyStats.exercise" :key="e.date">
+                    {{ new Date(e.date).toLocaleDateString() }} — Exercised ✔️
+                  </li>
+                </ul>
+
+                <h4>Medication</h4>
+                <ul>
+                  <li v-for="m in weeklyStats.medication" :key="m.date">
+                    {{ new Date(m.date).toLocaleDateString() }} — Medication Taken 💊
+                  </li>
+                </ul>
+              </div>
+            </div>
         </div>
       </section>
 
-      <!-- Daily Record + This Week -->
+      <!-- Daily Record + This Week (Tracker) -->
       <section class="daily-record">
         <div class="record-box">
           <h3>Your Daily Record</h3>
@@ -108,9 +164,11 @@
             <button
               class="next-btn"
               :disabled="!answers[idx]"
-              @click="nextQuestion">
+              @click="submissionButton"
+            >
               {{ idx < questions.length - 1 ? 'Next' : 'Submit'}}
             </button>
+
           </div>
         </div>
 
@@ -132,18 +190,120 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import Chart from "chart.js/auto";
 
 const route = useRoute()
 const userId = route.params.userId
 const user = ref(null)
 const migraines = ref([])
+
+//watch(migraines, () => {
+  //loadWeeklyInsights() 
+  //displayStats()
+//})
+
 const triggers = ref([])
 const loading = ref(true)
 const error = ref(null)
 
-onMounted(async () => {
+function submissionButton() {
+  if (idx.value < questions.value.length - 1) {
+    nextQuestion();
+  } else {
+    submitDailyRecord();
+  }
+}
+
+async function submitDailyRecord() {
+  try {
+    const a = answers.value; // shortcut
+
+    if (a[1] === "Yes") {
+      await fetch(`/api/event?user_id=${userId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system: "LOINC",
+          code: "LA15141-7",
+          event_type: "migraine",
+          severity: parseInt(a[3][0]), // “3: moderately” → 3
+          description: `Migraine at ${a.migraine_datetime}`
+        }),
+      });
+    }
+
+    if (a[4]) {
+      await fetch(`/api/event?user_id=${userId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system: "ICD-10",
+          code: "Z73.3",
+          event_type: "stress",
+          severity: parseInt(a[4][0]),
+          description: "Daily stress rating"
+        }),
+      });
+    }
+
+    if (a[5]) {
+      await fetch(`/api/event?user_id=${userId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system: "ICD-10",
+          code: "Y93.84",
+          event_type: "sleep",
+          numerical_value: parseInt(a[5]),
+          numerical_unit: "hours",
+          description: "Hours slept"
+        }),
+      });
+    }
+
+    if (a[6]) {
+      await fetch(`/api/event?user_id=${userId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system: "ICD-10",
+          code: "Y93.G1",
+          event_type: "meals",
+          numerical_value: parseInt(a[6]),
+          numerical_unit: "number",
+          description: "Meals eaten"
+        }),
+      });
+    }
+
+    alert("Your daily record has been saved!");
+  } catch (err) {
+    console.error(err);
+    alert("Error saving your daily migraine record. Please try again.");
+  }
+}
+
+const exportRecords = async () => {
+  try {
+    const res = await fetch(`/api/fhir/export/${userId}`, {
+      method: "POST"
+    });
+
+    if (!res.ok) throw new Error("Export to server failed");
+
+    const data = await res.json();
+
+    alert(`Exported to HAPI FHIR demo serve. Patient ID: ${data.patient_id}`);
+  } catch (err) {
+    console.error(err);
+    alert("Error exporting to HAPI FHIR.");
+  }
+};
+
+
+async function activateDashboard() {
   try {
     const resUser = await fetch(`/api/users/${userId}`)
     if (!resUser.ok) throw new Error('Failed to load user')
@@ -161,7 +321,12 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+
+  loadWeeklyInsights()
+  displayStats()
+}
+
+onMounted(() => activateDashboard())
 
 const weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 const migraineDays = ref([false, false, false, false, false, false, false])
@@ -210,7 +375,89 @@ function nextQuestion() {
         answers.value = { 0: new Date().toISOString().split('T')[0]}  //resets questions instead of keeping answers
     }
 }
+
+// WEEKLY ANALYTICS SECTION - BAR GRAPHS
+const currTab = ref("migraines");
+
+//watch(currTab, () => {
+  //displayStats();
+//});
+
+const weeklyStats = ref({
+  migraines: {
+      total: 0,
+      avg_intensity: 0,
+      morning: 0,
+      afternoon: 0,
+      night: 0
+    },
+
+    sleep: [],
+    stress: [],
+    exercise: [],
+    medication: []
+});
+
+async function loadWeeklyInsights() {
+  weeklyStats.value = {
+    migraines: {
+      total: 2,
+      avg_intensity: 3.5,
+      morning: 1,
+      afternoon: 1,
+      night: 0
+    },
+    sleep: [
+      { date: "2025-01-27", hours: 6 },
+      { date: "2025-01-28", hours: 7 }
+    ],
+    stress: [
+      { date: "2025-01-27", rating: 4 }
+    ],
+    exercise: [
+      { date: "2025-01-27", value: true }
+    ],
+    medication: []
+  }
+}
+
+
+let migraineChart = null;
+function displayStats() {
+
+  if (currTab.value !== "migraines") return;
+
+  const el = document.getElementById("migraineChart");
+  if (!el) return;
+
+
+  const migraineData = weeklyStats.value.migraines || {};
+  const count = migraineData.total || 0;
+  const avgIntensity = migraineData.avg_intensity || 0;
+
+
+  migraineChart = new Chart(el, {
+    type: "bar",
+    data: {
+      labels: ["Total Migraines", "Avg Intensity"],
+      datasets: [
+        {
+          label: "Migraine Stats",
+          data: [count, avgIntensity],
+          backgroundColor: ["#008080", "#4db6ac"]
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false }
+      }
+    }
+  });
+}
 </script>
+
 
 <style scoped>
 .dashboard {
@@ -297,11 +544,13 @@ function nextQuestion() {
 }
 .chart-placeholder {
   background: #e0f2f1;
-  height: 150px;
+  padding: 1rem;
+  border-radius: 6px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  color: #004d40;
+  justify-content: flex-start;
+  min-height: 220px; 
 }
 
 /* Daily Record + Week */
@@ -358,6 +607,44 @@ function nextQuestion() {
 .record-box label input {
   margin-right: 0.4rem;
 }
+.exportRecords {
+  margin-top: 1rem;
+  background-color: #ffffff;
+  color: #008080;
+  border: 2px solid #ffffff;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  width: 100%;
+  transition: 0.2s ease-in-out;
+}
+
+.exportRecords:hover {
+  background-color: #b2dfdb;
+  border-color: #b2dfdb;
+  color: #004d40;
+}
+
+.tabs button.active {
+  background: #008080; 
+  color: white;
+  border: 2px solid #00695c;
+}
+
+.weekly-insights h3 {
+  text-align: center;
+  margin-top: 0.5rem;
+  margin-bottom: 1rem;
+  font-size: 1.4rem;
+  color: #004d40;
+}
+
+#migraineChart {
+  margin-top: 0.5rem;
+  max-height: 250px;
+}
+
 </style>
 
 
