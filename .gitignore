@@ -1,5 +1,6 @@
 # Backend
 *.pyc
+.venv/*
 # Frontend
 frontend/dist
 
