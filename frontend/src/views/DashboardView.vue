@@ -229,7 +229,7 @@ async function submitDailyRecord() {
           code: "LA15141-7",
           event_type: "migraine",
           severity: parseInt(a[3][0]), // “3: moderately” → 3
-          description: `Migraine at ${a.migraine_datetime}`
+          description: `Migraine at ${a[2]}`
         }),
       });
     }
