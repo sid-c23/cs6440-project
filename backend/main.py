@@ -474,6 +474,218 @@ async def get_weekly_rolling(
     return out
 
 
+@app.get("/api/action-items")
+async def get_action_items(
+    db: db_dependency,
+    user_id: str,
+    window_size: int = Query(4, ge=1, le=26, description="Weeks to use for the current period (default 4)."),
+    use_localtime: bool = Query(False, description="Apply SQLite 'localtime' before week bucketing."),
+    min_sleep_hours: float = Query(7.0, description="Minimum average sleep hours per day target."),
+    min_meals_per_day: float = Query(3.0, description="Minimum average meals per day target."),
+    max_stress_hours: float = Query(3.0, description="Maximum average stress hours per day target.")
+):
+    """
+    Generates data-driven action items for a user by analyzing last `window_size` weeks of data
+    vs the prior `window_size` weeks (if available).
+
+    - Uses SQL (ORM) for weekly aggregation with unit normalization.
+    - Applies simple, configurable heuristics to create actionable suggestions.
+    """
+
+    # --- Week bucketing (Option B) ---
+    ts_text = cast(Event.event_timestamp, String)
+    ts_norm = func.replace(ts_text, 'T', ' ')
+    week_start = func.date(ts_norm, 'localtime', 'weekday 1', '-7 days') if use_localtime \
+                 else func.date(ts_norm, 'weekday 1', '-7 days')
+
+    # --- Normalize to a single numeric 'value_std' ---
+    value_std = case(
+        (
+            and_(Event.event_type == EventType.sleep,  Event.numerical_unit == Unit.minutes),
+            cast(Event.numerical_value, Float) / 60.0
+        ),
+        (
+            and_(Event.event_type == EventType.sleep,  Event.numerical_unit == Unit.hours),
+            cast(Event.numerical_value, Float)
+        ),
+        (
+            and_(Event.event_type == EventType.stress, Event.numerical_unit == Unit.minutes),
+            cast(Event.numerical_value, Float) / 60.0
+        ),
+        (
+            and_(Event.event_type == EventType.stress, Event.numerical_unit == Unit.hours),
+            cast(Event.numerical_value, Float)
+        ),
+        (
+            and_(Event.event_type == EventType.meals,  Event.numerical_unit == Unit.number),
+            cast(Event.numerical_value, Float)
+        ),
+        else_=None
+    )
+
+    # --- Base rows (ORM ensures GUID binding correctness) ---
+    base_q = (
+        db.query(
+            week_start.label('week_start_monday'),
+            Event.event_type.label('event_type'),
+            Event.severity.label('severity'),
+            value_std.label('value_std')
+        )
+        .filter(
+            Event.user_id == user_id,
+            Event.event_timestamp.isnot(None)
+        )
+    ).subquery()
+
+    # --- Weekly aggregation (sparse, chronological) ---
+    weekly_q = (
+        db.query(
+            base_q.c.week_start_monday,
+            func.sum(case((base_q.c.event_type == EventType.migraine, 1), else_=0)).label('migraine_events'),
+            func.avg(case((base_q.c.event_type == EventType.migraine, cast(base_q.c.severity, Float)), else_=None)).label('migraine_avg_severity'),
+            func.sum(case((base_q.c.event_type == EventType.sleep,  base_q.c.value_std),  else_=0.0)).label('sleep_hours'),
+            func.sum(case((base_q.c.event_type == EventType.stress, base_q.c.value_std),  else_=0.0)).label('stress_hours'),
+            func.sum(case((base_q.c.event_type == EventType.meals,  base_q.c.value_std),  else_=0.0)).label('meals_count'),
+        )
+        .group_by(base_q.c.week_start_monday)
+        .order_by(base_q.c.week_start_monday)
+    )
+
+    weekly = weekly_q.all()
+    if not weekly:
+        return {
+            "user_id": user_id,
+            "action_items": [],
+            "summary": {"message": "No data found for user."}
+        }
+
+    # --- Split into current vs previous period ---
+    # Use the most recent `window_size` weeks as current, previous `window_size` weeks as baseline
+    current = weekly[-window_size:] if len(weekly) >= window_size else weekly[:]
+    previous = weekly[-(2*window_size):-window_size] if len(weekly) >= 2*window_size else []
+
+    # Helper to average across weeks, converting weekly sums to per-day averages (divide by 7)
+    def avg_per_day_from_weeks(values):
+        if not values:
+            return None
+        total = sum(values)
+        days = 7 * len(values)
+        return total / days
+
+    def avg_across_weeks(values):
+        nums = [v for v in values if v is not None]
+        return (sum(nums) / len(nums)) if nums else None
+
+    # Current period metrics
+    cur_sleep_per_day  = avg_per_day_from_weeks([w.sleep_hours  for w in current])
+    cur_stress_per_day = avg_per_day_from_weeks([w.stress_hours for w in current])
+    cur_meals_per_day  = avg_per_day_from_weeks([w.meals_count  for w in current])
+
+    cur_migraine_events_per_week = (sum([w.migraine_events for w in current]) / len(current)) if current else None
+    cur_migraine_severity        = avg_across_weeks([w.migraine_avg_severity for w in current])
+
+    # Previous period metrics (optional)
+    prev_sleep_per_day  = avg_per_day_from_weeks([w.sleep_hours  for w in previous]) if previous else None
+    prev_stress_per_day = avg_per_day_from_weeks([w.stress_hours for w in previous]) if previous else None
+    prev_meals_per_day  = avg_per_day_from_weeks([w.meals_count  for w in previous]) if previous else None
+
+    prev_migraine_events_per_week = (sum([w.migraine_events for w in previous]) / len(previous)) if previous else None
+    prev_migraine_severity        = avg_across_weeks([w.migraine_avg_severity for w in previous]) if previous else None
+
+    # Percent changes (safe handling)
+    def pct_change(cur, prev):
+        if cur is None or prev is None or prev == 0:
+            return None
+        return (cur - prev) / prev
+
+    sleep_pct_change   = pct_change(cur_sleep_per_day,  prev_sleep_per_day)
+    stress_pct_change  = pct_change(cur_stress_per_day, prev_stress_per_day)
+    meals_pct_change   = pct_change(cur_meals_per_day,  prev_meals_per_day)
+    mig_events_change  = pct_change(cur_migraine_events_per_week, prev_migraine_events_per_week)
+    mig_severity_change= pct_change(cur_migraine_severity, prev_migraine_severity)
+
+    # --- Heuristic-driven action items ---
+    actions = []
+
+    # Sleep recommendation
+    if cur_sleep_per_day is not None and cur_sleep_per_day < min_sleep_hours:
+        actions.append({
+            "title": "Get more sleep",
+            "priority": "high" if (sleep_pct_change is not None and sleep_pct_change < -0.1) else "medium",
+            "reason": f"Average sleep is {cur_sleep_per_day:.2f}h/day over the last {len(current)} weeks, "
+                      f"below your target of {min_sleep_hours:.1f}h/day."
+                      + (f" Down {abs(sleep_pct_change*100):.1f}% vs previous period." if sleep_pct_change is not None and sleep_pct_change < 0 else "")
+        })
+
+    # Meals recommendation
+    if cur_meals_per_day is not None and cur_meals_per_day < min_meals_per_day:
+        actions.append({
+            "title": "Have more meals",
+            "priority": "medium",
+            "reason": f"Average meals are {cur_meals_per_day:.2f}/day over the last {len(current)} weeks, "
+                      f"below your target of {min_meals_per_day:.1f}/day."
+                      + (f" Down {abs(meals_pct_change*100):.1f}% vs previous period." if meals_pct_change is not None and meals_pct_change < 0 else "")
+        })
+
+    # Stress recommendation
+    stress_flag = (cur_stress_per_day is not None and cur_stress_per_day > max_stress_hours)
+    stress_rising = (stress_pct_change is not None and stress_pct_change > 0.1)
+    if stress_flag or stress_rising:
+        detail = []
+        if stress_flag:
+            detail.append(f"average stress is {cur_stress_per_day:.2f}h/day (target ≤ {max_stress_hours:.1f}h/day)")
+        if stress_rising:
+            detail.append(f"stress is up {stress_pct_change*100:.1f}% vs previous period")
+        actions.append({
+            "title": "Reduce stress using healthy methods",
+            "priority": "high" if stress_flag and stress_rising else "medium",
+            "reason": " ; ".join(detail)
+        })
+
+    # Optional migraine context (not an action item, but informative)
+    migraine_context = {}
+    if cur_migraine_events_per_week is not None:
+        migraine_context["migraine_events_per_week"] = round(cur_migraine_events_per_week, 2)
+    if cur_migraine_severity is not None:
+        migraine_context["migraine_avg_severity"] = round(cur_migraine_severity, 2)
+    if mig_events_change is not None:
+        migraine_context["migraine_events_change_pct"] = round(mig_events_change * 100, 1)
+    if mig_severity_change is not None:
+        migraine_context["migraine_severity_change_pct"] = round(mig_severity_change * 100, 1)
+
+    # --- Construct response ---
+    summary = {
+        "period_weeks": len(current),
+        "sleep_hours_per_day": cur_sleep_per_day,
+        "meals_per_day": cur_meals_per_day,
+        "stress_hours_per_day": cur_stress_per_day,
+        "previous_period": {
+            "exists": bool(previous),
+            "sleep_hours_per_day": prev_sleep_per_day,
+            "meals_per_day": prev_meals_per_day,
+            "stress_hours_per_day": prev_stress_per_day,
+        },
+        "percent_changes": {
+            "sleep": sleep_pct_change,
+            "meals": meals_pct_change,
+            "stress": stress_pct_change,
+            "migraine_events": mig_events_change,
+            "migraine_severity": mig_severity_change,
+        },
+        "migraine_context": migraine_context,
+        "bucket_range": {
+            "start_week": weekly[0].week_start_monday,
+            "end_week": weekly[-1].week_start_monday
+        }
+    }
+
+    return {
+        "user_id": user_id,
+        "action_items": actions,
+        "summary": summary
+    }
+
+
 # @app.post("/api/export_user_to_fhir/{user_id}", status_code=200)
 # async def export_user_to_fhir(db: db_dependency, user_id: str):
 #     user = db.query(User).filter(User.id == user_id).first()
