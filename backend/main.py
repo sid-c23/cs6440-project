@@ -258,7 +258,7 @@ async def export_patient_data_to_fhir(db: db_dependency, user_id: str):
     existing_patients = Patient.where(struct={'identifier': user_id}).perform_resources(smart.server)
 
     if existing_patients:
-            patient = existing_patients[0]
+            patient = existing_patients[0].as_json()
             patient_id = patient['id']
             reused = True
     else:

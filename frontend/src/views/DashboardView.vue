@@ -47,15 +47,15 @@
         <h2>Your Weekly Insights</h2>
         <div class="insights-box">
             <div class="tabs">
-              <button 
+              <button
                 :class="{ active: currTab === 'migraines' }"
                 @click="currTab = 'migraines'"
               >Migraines</button>
-              <button 
+              <button
                 :class="{ active: currTab === 'triggers' }"
                 @click="currTab = 'triggers'"
               >Triggers</button>
-              <button 
+              <button
                 :class="{ active: currTab === 'preventions' }"
                 @click="currTab = 'preventions'"
               >Preventions</button>
@@ -200,7 +200,7 @@ const user = ref(null)
 const migraines = ref([])
 
 //watch(migraines, () => {
-  //loadWeeklyInsights() 
+  //loadWeeklyInsights()
   //displayStats()
 //})
 
@@ -270,7 +270,7 @@ async function submitDailyRecord() {
         body: JSON.stringify({
           system: "ICD-10",
           code: "Y93.G1",
-          event_type: "meals",
+          event_type: "meal",
           numerical_value: parseInt(a[6]),
           numerical_unit: "number",
           description: "Meals eaten"
@@ -287,7 +287,7 @@ async function submitDailyRecord() {
 
 const exportRecords = async () => {
   try {
-    const res = await fetch(`/api/fhir/export/${userId}`, {
+    const res = await fetch(`/api/export_patient_data_to_fhir/${userId}`, {
       method: "POST"
     });
 
@@ -295,7 +295,7 @@ const exportRecords = async () => {
 
     const data = await res.json();
 
-    alert(`Exported to HAPI FHIR demo serve. Patient ID: ${data.patient_id}`);
+    alert(`Exported to HAPI FHIR demo server. Patient ID: ${data.patient.id}`);
   } catch (err) {
     console.error(err);
     alert("Error exporting to HAPI FHIR.");
@@ -550,7 +550,7 @@ function displayStats() {
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  min-height: 220px; 
+  min-height: 220px;
 }
 
 /* Daily Record + Week */
@@ -627,7 +627,7 @@ function displayStats() {
 }
 
 .tabs button.active {
-  background: #008080; 
+  background: #008080;
   color: white;
   border: 2px solid #00695c;
 }
