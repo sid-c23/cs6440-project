@@ -53,7 +53,7 @@
               >Migraines</button>
               <button
                 :class="{ active: currTab === 'triggers' }"
-                @click="currTab = 'triggers'"
+                @click="() => { currTab = 'triggers'; displayTriggers(); }"
               >Triggers</button>
               <button
                 :class="{ active: currTab === 'preventions' }"
@@ -65,43 +65,37 @@
               <!-- SWITCH BETWEEN VIEWS -->
               <div v-show="currTab === 'migraines'">
                 <h3>Migraines This Week</h3>
-                <canvas id="migraineChart"></canvas>
+                <div class="statCharts">
+                  <canvas id="migraineChart"></canvas>
+                </div>
               </div>
 
-              <div v-if="currTab === 'triggers'">
+              <div v-show="currTab === 'triggers'">
                 <h3>Trigger Summary</h3>
-
-                <h4>Sleep</h4>
-                <ul>
-                  <li v-for="s in weeklyStats.sleep" :key="s.date">
-                    {{ new Date(s.date).toLocaleDateString() }} — Slept {{ s.hours }} hrs
-                  </li>
-                </ul>
-
-                <h4>Stress</h4>
-                <ul>
-                  <li v-for="s in weeklyStats.stress" :key="s.date">
-                    {{ new Date(s.date).toLocaleDateString() }} — Stress {{ s.rating }}/5
-                  </li>
-                </ul>
+                <div class="statCharts">
+                  <canvas id="triggerChart"></canvas>
+                </div>
               </div>
-
               <div v-if="currTab === 'preventions'">
-                <h3>Preventions</h3>
+                <h3>Weekly Prevention Tracker</h3>
 
-                <h4>Exercise</h4>
-                <ul>
-                  <li v-for="e in weeklyStats.exercise" :key="e.date">
-                    {{ new Date(e.date).toLocaleDateString() }} — Exercised ✔️
-                  </li>
-                </ul>
+                <table class="prevention-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Exercise</th>
+                      <th>Medication</th>
+                    </tr>
+                  </thead>
 
-                <h4>Medication</h4>
-                <ul>
-                  <li v-for="m in weeklyStats.medication" :key="m.date">
-                    {{ new Date(m.date).toLocaleDateString() }} — Medication Taken 💊
-                  </li>
-                </ul>
+                  <tbody>
+                    <tr v-for="p in preventionWeek" :key="p.date">
+                      <td>{{ new Date(p.date).toLocaleDateString() }}</td>
+                      <td>{{ p.exercise ? "✔️" : "—" }}</td>
+                      <td>{{ p.medication ? "✔️" : "—" }}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
         </div>
@@ -112,9 +106,11 @@
         <div class="record-box">
           <h3>Your Daily Record</h3>
           <div v-if="questions.length">
-            <p>{{ questions[idx].text }}</p>
+            <p v-if="!questions[idx].condition || questions[idx].condition()">
+              {{ questions[idx].text }}
+            </p>
 
-            <div v-if="questions[idx].type == 'radio'">
+            <div v-if="(!questions[idx].condition || questions[idx].condition()) && questions[idx].type == 'radio'">
               <label
                 v-for="option in questions[idx].options"
                 :key="option"
@@ -129,7 +125,7 @@
               </label>
             </div>
 
-            <div v-else-if="questions[idx].type === 'text'">
+            <div v-else-if="(!questions[idx].condition || questions[idx].condition()) && questions[idx].type === 'text'">
               <input
                 type="text"
                 v-model="answers[idx]"
@@ -137,7 +133,7 @@
               />
             </div>
 
-            <div v-else-if="questions[idx].type === 'number'">
+            <div v-else-if="(!questions[idx].condition || questions[idx].condition()) && questions[idx].type === 'number'">
               <input
                 type="number"
                 v-model="answers[idx]"
@@ -145,7 +141,7 @@
               />
             </div>
 
-            <div v-else-if="questions[idx].type === 'date'">
+            <div v-else-if="(!questions[idx].condition || questions[idx].condition()) && questions[idx].type === 'date'">
               <input
                 type="date"
                 v-model="answers[idx]"
@@ -153,7 +149,7 @@
               />
             </div>
 
-            <div v-else-if="questions[idx].type === 'time'">
+            <div v-else-if="(!questions[idx].condition || questions[idx].condition()) && questions[idx].type === 'time'">
               <input
                 type="time"
                 v-model="answers[idx]"
@@ -190,7 +186,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import Chart from "chart.js/auto";
 
@@ -209,10 +205,10 @@ const loading = ref(true)
 const error = ref(null)
 
 function submissionButton() {
-  if (idx.value < questions.value.length - 1) {
-    nextQuestion();
-  } else {
+  if (idx.value === questions.value.length - 1) {
     submitDailyRecord();
+  } else {
+    nextQuestion();
   }
 }
 
@@ -229,7 +225,7 @@ async function submitDailyRecord() {
           code: "LA15141-7",
           event_type: "migraine",
           severity: parseInt(a[3][0]), // “3: moderately” → 3
-          description: `Migraine at ${a[2]}`
+          description: `Migraine at ${a.migraine_datetime}`
         }),
       });
     }
@@ -279,6 +275,12 @@ async function submitDailyRecord() {
     }
 
     alert("Your daily record has been saved!");
+
+    idx.value = 0
+    answers.value = {
+      0: new Date().toISOString().split("T")[0]
+    }
+
   } catch (err) {
     console.error(err);
     alert("Error saving your daily migraine record. Please try again.");
@@ -338,8 +340,13 @@ function toggleDay(index) {
 const questions = ref([
     { text: 'Please select the date you are logging', type: 'date'},
     { text: 'Did you experience a migraine today?', type: 'radio', options: ['Yes', 'No']},
-    { text: 'What time did the migraine occur?', type: 'time'},
-    { text: 'How would you rate your migraine intensity?', type: 'radio', options: ['1: Not at all severe', '2: Somewhat severe', '3: Moderately severe', '4: Very severe', '5: Extremely severe']},
+
+    // adding conditional logic
+    { text: 'What time did the migraine occur?', type: 'time', condition: () => answers.value[1] === "Yes" },
+    { text: 'How would you rate your migraine intensity?', type: 'radio', 
+      options: ['1: Not at all severe', '2: Somewhat severe', '3: Moderately severe', '4: Very severe', '5: Extremely severe'],
+      condition: () => answers.value[1] === "Yes" },
+
     { text: 'How stressed were you today?', type: 'radio', options: ['1: Not at all stressed', '2: Somewhat stressed', '3: Moderately stressed', '4: Very stressed', '5: Extremely stressed']},
     { text: 'How many hours did you sleep?', type: 'number', placeholder: 'Enter number of hours'},
     { text: 'How many meals did you eat today?', type: 'number', placeholder: 'Enter number of meals'},
@@ -366,14 +373,18 @@ function nextQuestion() {
             console.log('Migraine datetime:', dt)
         }
     }
-    if (idx.value < questions.value.length - 1) {
-        idx.value++
-    } else {
-        console.log('All answers:', answers.value)
-        alert('Thanks for completing your daily record!')
-        idx.value = 0 // option to add response for another day
-        answers.value = { 0: new Date().toISOString().split('T')[0]}  //resets questions instead of keeping answers
+
+    idx.value++;
+
+    if (idx.value >= questions.value.length) {
+      submitDailyRecord();
+      return;
     }
+
+    const quiz = questions.value[idx.value];
+    if (quiz.condition && !quiz.condition()) {
+      nextQuestion();
+    }    
 }
 
 // WEEKLY ANALYTICS SECTION - BAR GRAPHS
@@ -394,6 +405,7 @@ const weeklyStats = ref({
 
     sleep: [],
     stress: [],
+    meals: [], //forgot to add meals earlier, baseline should be 3 meals
     exercise: [],
     medication: []
 });
@@ -408,16 +420,23 @@ async function loadWeeklyInsights() {
       night: 0
     },
     sleep: [
-      { date: "2025-01-27", hours: 6 },
-      { date: "2025-01-28", hours: 7 }
+      { date: "2025-11-27", hours: 6 },
+      { date: "2025-11-28", hours: 7 }
     ],
     stress: [
-      { date: "2025-01-27", rating: 4 }
+      { date: "2025-11-27", rating: 4 }
+    ],
+    //NEW mock data for meals
+    meals: [
+      { date: "2025-11-27", count: 2 },
+      { date: "2025-11-28", count: 3 }
     ],
     exercise: [
-      { date: "2025-01-27", value: true }
+      { date: "2025-11-28", value: true } 
     ],
-    medication: []
+    medication: [
+       { date: "2025-11-26", value: true }
+    ]
   }
 }
 
@@ -456,6 +475,132 @@ function displayStats() {
     }
   });
 }
+
+let triggerChart = null;
+function displayTriggers() {
+  if (currTab.value !== "triggers") return;
+
+  const el = document.getElementById("triggerChart");
+  if (!el) return;
+  if (triggerChart) return;
+
+  const sleepHours = weeklyStats.value.sleep.map(s => s.hours);
+  const stressLevels = weeklyStats.value.stress.map(s => s.rating);
+  const mealCt = weeklyStats.value.meals.map(m => m.count);
+
+  const labels = weeklyStats.value.sleep.map(s => 
+    new Date(s.date).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric"
+    })
+  );
+
+  triggerChart = new Chart(el, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Hours Slept",
+          data: sleepHours,
+          backgroundColor: "#4db6ac"
+        },
+        {
+          label: "Stress Level",
+          data: stressLevels,
+          backgroundColor: "#ffab91"
+        },
+        {
+          label: "Daily Meals",
+          data: mealCt,
+          backgroundColor: "#81d4fa"
+        },
+        {
+          label: "Recommended Sleep",
+          data: [7, 7],
+          xAxisID: "baseline",
+          spanGaps: true, 
+          type: "line",
+          borderColor: "#00695c",
+          borderWidth: 2,
+          pointRadius: 0,
+          borderDash: [6, 6]
+        },
+        {
+          label: "Recommended Daily Meals",
+          data: [3, 3],
+          xAxisID: "baseline",
+          type: "line",
+          borderColor: "#0277bd",
+          borderWidth: 2,
+          pointRadius: 0,
+          borderDash: [6, 6]
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: {
+        padding: { top: 5 }
+      },
+      plugins: {
+        legend: { 
+          display: true,
+          position: "top",
+          align: "start",
+          labels: {
+            usePointStyle: true,
+            padding: 12,
+            font: { size: 12 }
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: { font: { size: 12} }
+        },
+        x: {
+          ticks: { font: { size: 12 } }
+        },
+        baseline: {
+          type: "category",
+          labels,
+          display: false
+        }
+      }
+    }
+  });
+}
+
+// I'm just going to do a grid for preventions rn unless we decide otherwise
+
+const preventionWeek = computed(() => {
+  const today = new Date();
+  const day = today.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() + diff);
+
+  const week = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+
+    const iso = d.toLocaleDateString("en-CA");
+
+    week.push({
+      date: iso,
+      exercise: weeklyStats.value.exercise.some(e => e.date === iso),
+      medication: weeklyStats.value.medication.some(m => m.date === iso)
+    });
+  }
+
+  return week;
+});
+
+
 </script>
 
 
@@ -550,7 +695,20 @@ function displayStats() {
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  min-height: 220px;
+  min-height: 420px;
+}
+
+.statCharts {
+  width: 100%;
+  height: 360px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.statCharts canvas {
+  width: 100%;
+  height: 320px;
 }
 
 /* Daily Record + Week */
@@ -643,6 +801,40 @@ function displayStats() {
 #migraineChart {
   margin-top: 0.5rem;
   max-height: 250px;
+}
+
+.prevention-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+  background: white;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.prevention-table th {
+  background: #b2dfdb;
+  color: #004d40;
+  padding: 0.6rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.prevention-table td {
+  padding: 0.6rem;
+  border-bottom: 1px solid #e0f2f1;
+  color: #004d40;
+  font-size: 0.95rem;
+}
+
+.prevention-table tr:last-child td {
+  border-bottom: none;
+}
+
+.prevention-table td:nth-child(2),
+.prevention-table td:nth-child(3) {
+  text-align: center;
+  font-size: 1.2rem;
 }
 
 </style>
