@@ -17,6 +17,7 @@ class EventRequest(BaseModel):
     numerical_value: int | None = None
     numerical_unit: Unit | None = None
     description: str | None = None
+    event_timestamp: datetime | None = None
     creation_timestamp: datetime | None = None
     update_timestamp: datetime | None = None
 

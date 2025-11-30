@@ -12,6 +12,10 @@ from .database import engine, get_db
 from .models import Event, User, Base, EventType, Severity, Unit
 from . import schemas
 
+from sqlalchemy import func, cast, String, Float
+from fastapi import Query
+
+
 from fhirclient import client
 from fhirclient.models.patient import Patient
 from fhirclient.models.observation import Observation
@@ -155,6 +159,10 @@ def convert_event_to_fhir(event: Event):
                 {
                     'system': 'unit',
                     'code': str(event.numerical_unit)
+                },
+                {
+                    'system': 'eventTimestamp',
+                    'code': str(event.event_timestamp)
                 }
             ]
         },
@@ -182,6 +190,58 @@ async def get_patient_fhir(user_id: str):
     #     'user': user,
     #     'patient': patient.as_json()
     # }
+
+
+@app.get("/api/migraines/weekly")
+async def get_migraines_weekly(
+    db: db_dependency,
+    user_id: str,
+    use_localtime: bool = Query(False, description="Apply SQLite 'localtime' modifier before week calc")
+):
+    """
+    Returns per-week migraine metrics for the given user:
+      - week_start_monday: YYYY-MM-DD (Monday of that week)
+      - event_count: number of migraine events in that week
+      - avg_severity: average severity for that week's migraine events
+    """
+
+    # Normalize ISO-8601 timestamp: replace 'T' with ' ' and ensure text form
+    ts_text = cast(Event.event_timestamp, String)
+    ts_norm = func.replace(ts_text, 'T', ' ')
+
+    # Build the week-start (Monday) expression using SQLite date() modifiers
+    # Order matters: if use_localtime is True, apply 'localtime' *before* 'weekday 1' and '-7 days'
+    if use_localtime:
+        week_start = func.date(ts_norm, 'localtime', 'weekday 1', '-7 days')
+    else:
+        week_start = func.date(ts_norm, 'weekday 1', '-7 days')
+
+    query = (
+        db.query(
+            week_start.label('week_start_monday'),
+            func.count(Event.id).label('event_count'),
+            func.avg(cast(Event.severity, Float)).label('avg_severity')
+        )
+        .filter(
+            Event.user_id == user_id,
+            Event.event_type == EventType.migraine
+        )
+        .group_by(week_start)
+        .order_by(week_start)
+    )
+
+    rows = query.all()
+
+    # Convert SQLAlchemy rows to plain JSON-friendly dicts
+    return [
+        {
+            "week_start_monday": r.week_start_monday,
+            "event_count": int(r.event_count),
+            "avg_severity": float(r.avg_severity) if r.avg_severity is not None else None
+        }
+        for r in rows
+    ]
+
 
 # @app.post("/api/export_user_to_fhir/{user_id}", status_code=200)
 # async def export_user_to_fhir(db: db_dependency, user_id: str):
@@ -258,7 +318,7 @@ async def export_patient_data_to_fhir(db: db_dependency, user_id: str):
     existing_patients = Patient.where(struct={'identifier': user_id}).perform_resources(smart.server)
 
     if existing_patients:
-            patient = existing_patients[0]
+            patient = existing_patients[0].as_json()
             patient_id = patient['id']
             reused = True
     else:
@@ -331,6 +391,7 @@ async def populate_data(db: db_dependency):
                 numerical_value=random.randint(5, 30),
                 numerical_unit=Unit.minutes,
                 description='Had a migraine',
+                event_timestamp=get_random_date_between(start_date, end_date),
                 creation_timestamp=get_random_date_between(start_date, end_date)
                 )
             db.add(m)
@@ -343,6 +404,7 @@ async def populate_data(db: db_dependency):
                 numerical_value=random.randint(5, 13),
                 numerical_unit=Unit.hours,
                 description='Got some sleep',
+                event_timestamp=get_random_date_between(start_date, end_date),
                 creation_timestamp=get_random_date_between(start_date, end_date)
                 )
             db.add(s)
@@ -353,6 +415,7 @@ async def populate_data(db: db_dependency):
                 event_type=EventType.stress,
                 severity=random.choice(list(Severity)),
                 description='Had stress today',
+                event_timestamp=get_random_date_between(start_date, end_date),
                 creation_timestamp=get_random_date_between(start_date, end_date))
             db.add(s)
     db.commit()
