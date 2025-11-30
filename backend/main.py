@@ -11,7 +11,7 @@ from .database import engine, get_db
 from .models import Event, User, Base, EventType, Severity, Unit
 from . import schemas
 
-from sqlalchemy import func, cast, String, Float, and_, case
+from sqlalchemy import func, cast, String, Float, case, and_
 from fastapi import Query, Depends
 from datetime import datetime, timedelta, date, time
 
@@ -251,20 +251,7 @@ async def get_weekly_rolling(
     start_date: str | None = Query(None, description="Optional YYYY-MM-DD lower bound (aligned to Monday)."),
     end_date: str | None = Query(None, description="Optional YYYY-MM-DD upper bound (aligned to Monday)."),
 ):
-    """
-    Returns a continuous weekly time series with:
-      - week_start_monday: YYYY-MM-DD (Monday of the week)
-      - migraine_events: count per week
-      - migraine_avg_severity: average severity per week (NULL if none)
-      - sleep_hours: sum per week (minutes -> hours)
-      - stress_hours: sum per week (minutes -> hours)
-      - meals_count: total meals per week (unit 'number')
-      - *_prev: previous week's value (lag-1)
-      - pct_*_change: percent change vs previous week (NULL when prev is NULL or 0)
-      - ma_*: moving average over `window_size` weeks (including current week)
-    """
-
-    # --- Quick empty check using ORM (robust for GUID/BLOB user_id) ---
+    # Empty check (ORM binds GUID/BLOB correctly)
     total_events = (
         db.query(func.count(Event.id))
           .filter(Event.user_id == user_id)
@@ -273,16 +260,13 @@ async def get_weekly_rolling(
     if not total_events:
         return []
 
-    # --- Week bucket (Option B) ---
+    # Week bucket (Option B)
     ts_text = cast(Event.event_timestamp, String)
     ts_norm = func.replace(ts_text, 'T', ' ')
-    if use_localtime:
-        week_start = func.date(ts_norm, 'localtime', 'weekday 1', '-7 days')
-    else:
-        week_start = func.date(ts_norm, 'weekday 1', '-7 days')
+    week_start = func.date(ts_norm, 'localtime', 'weekday 1', '-7 days') if use_localtime \
+                 else func.date(ts_norm, 'weekday 1', '-7 days')
 
-    # --- Unit normalization into a single numeric 'value_std' ---
-    # ✅ SQLAlchemy 2.0: pass whens as positional tuples
+    # Normalize numeric metrics (sleep -> hours; meals -> count). Stress excluded.
     value_std = case(
         (
             and_(Event.event_type == EventType.sleep,  Event.numerical_unit == Unit.minutes),
@@ -293,21 +277,12 @@ async def get_weekly_rolling(
             cast(Event.numerical_value, Float)
         ),
         (
-            and_(Event.event_type == EventType.stress, Event.numerical_unit == Unit.minutes),
-            cast(Event.numerical_value, Float) / 60.0
-        ),
-        (
-            and_(Event.event_type == EventType.stress, Event.numerical_unit == Unit.hours),
-            cast(Event.numerical_value, Float)
-        ),
-        (
             and_(Event.event_type == EventType.meals,  Event.numerical_unit == Unit.number),
             cast(Event.numerical_value, Float)
         ),
         else_=None
     )
 
-    # --- Base rows for this user (ORM ensures GUID binding is correct) ---
     base_q = (
         db.query(
             week_start.label('week_start_monday'),
@@ -315,52 +290,25 @@ async def get_weekly_rolling(
             Event.severity.label('severity'),
             value_std.label('value_std')
         )
-        .filter(
-            Event.user_id == user_id,
-            Event.event_timestamp.isnot(None)  # avoid NULL buckets
-        )
+        .filter(Event.user_id == user_id, Event.event_timestamp.isnot(None))
     ).subquery()
 
-    # --- Weekly aggregation (sparse) ---
     weekly_q = (
         db.query(
             base_q.c.week_start_monday,
 
-            # counts: sum of 1s for migraine rows
-            func.sum(
-                case(
-                    (base_q.c.event_type == EventType.migraine, 1),
-                    else_=0
-                )
-            ).label('migraine_events'),
+            # migraines
+            func.sum(case((base_q.c.event_type == EventType.migraine, 1), else_=0)).label('migraine_events'),
+            func.avg(case((base_q.c.event_type == EventType.migraine, cast(base_q.c.severity, Float)), else_=None)).label('migraine_avg_severity'),
 
-            # avg severity only for migraine rows; keep None if no migraines that week
-            func.avg(
-                case(
-                    (base_q.c.event_type == EventType.migraine, cast(base_q.c.severity, Float)),
-                    else_=None
-                )
-            ).label('migraine_avg_severity'),
+            # sleep hours
+            func.sum(case((base_q.c.event_type == EventType.sleep, base_q.c.value_std), else_=0.0)).label('sleep_hours'),
 
-            # sums for sleep/stress/meals
-            func.sum(
-                case(
-                    (base_q.c.event_type == EventType.sleep,  base_q.c.value_std),
-                    else_=0.0
-                )
-            ).label('sleep_hours'),
-            func.sum(
-                case(
-                    (base_q.c.event_type == EventType.stress, base_q.c.value_std),
-                    else_=0.0
-                )
-            ).label('stress_hours'),
-            func.sum(
-                case(
-                    (base_q.c.event_type == EventType.meals,  base_q.c.value_std),
-                    else_=0.0
-                )
-            ).label('meals_count'),
+            func.sum(case((base_q.c.event_type == EventType.stress, 1), else_=0)).label('stress_events'),
+            func.avg(case((base_q.c.event_type == EventType.stress, cast(base_q.c.severity, Float)), else_=None)).label('stress_avg_severity'),
+
+            # meals count
+            func.sum(case((base_q.c.event_type == EventType.meals, base_q.c.value_std), else_=0.0)).label('meals_count'),
         )
         .group_by(base_q.c.week_start_monday)
         .order_by(base_q.c.week_start_monday)
@@ -370,32 +318,25 @@ async def get_weekly_rolling(
     if not rows:
         return []
 
-    # --- Build continuous week calendar in Python ---
+    # Continuous week calendar
     def to_date(s: str) -> datetime:
         return datetime.strptime(s, "%Y-%m-%d")
 
     def align_to_monday(d: datetime) -> datetime:
-        # Align to Monday of the same "current week" per Option B: next Monday then -7 days
         return (d + timedelta(days=(7 - d.weekday()) % 7)) - timedelta(days=7)
 
     min_week = to_date(rows[0].week_start_monday)
     max_week = to_date(rows[-1].week_start_monday)
-
     if start_date:
-        sd = align_to_monday(to_date(start_date))
-        min_week = min(sd, min_week)
+        sd = align_to_monday(to_date(start_date)); min_week = min(sd, min_week)
     if end_date:
-        ed = align_to_monday(to_date(end_date))
-        max_week = max(ed, max_week)
+        ed = align_to_monday(to_date(end_date));    max_week = max(ed, max_week)
 
-    # Generate continuous weeks
-    weeks = []
-    cur = min_week
+    weeks, cur = [], min_week
     while cur <= max_week:
         weeks.append(cur.strftime("%Y-%m-%d"))
         cur += timedelta(days=7)
 
-    # Map sparse → continuous
     sparse = {r.week_start_monday: r for r in rows}
     series = []
     for w in weeks:
@@ -405,11 +346,12 @@ async def get_weekly_rolling(
             "migraine_events": int(r.migraine_events) if r else 0,
             "migraine_avg_severity": float(r.migraine_avg_severity) if (r and r.migraine_avg_severity is not None) else None,
             "sleep_hours": float(r.sleep_hours) if r else 0.0,
-            "stress_hours": float(r.stress_hours) if r else 0.0,
+            "stress_events": int(r.stress_events) if r else 0,
+            "stress_avg_severity": float(r.stress_avg_severity) if (r and r.stress_avg_severity is not None) else None,
             "meals_count": float(r.meals_count) if r else 0.0,
         })
 
-    # --- Lags, percent changes, moving averages ---
+    # Lags / pct changes / moving averages
     def pct_change(curr, prev):
         if prev is None or prev == 0:
             return None
@@ -424,28 +366,32 @@ async def get_weekly_rolling(
         return out
 
     k = max(window_size, 1)
-    migraine_events = [x["migraine_events"] for x in series]
-    migraine_sev    = [x["migraine_avg_severity"] for x in series]
-    sleep_hours     = [x["sleep_hours"] for x in series]
-    stress_hours    = [x["stress_hours"] for x in series]
-    meals_count     = [x["meals_count"] for x in series]
+    migraine_events  = [x["migraine_events"]       for x in series]
+    migraine_sev     = [x["migraine_avg_severity"] for x in series]
+    sleep_hours      = [x["sleep_hours"]           for x in series]
+    stress_events    = [x["stress_events"]         for x in series]
+    stress_sev       = [x["stress_avg_severity"]   for x in series]
+    meals_count      = [x["meals_count"]           for x in series]
 
     migraine_events_prev = [None] + migraine_events[:-1]
     migraine_sev_prev    = [None] + migraine_sev[:-1]
     sleep_hours_prev     = [None] + sleep_hours[:-1]
-    stress_hours_prev    = [None] + stress_hours[:-1]
+    stress_events_prev   = [None] + stress_events[:-1]
+    stress_sev_prev      = [None] + stress_sev[:-1]
     meals_count_prev     = [None] + meals_count[:-1]
 
     pct_migraine_events_change   = [pct_change(c, p) for c, p in zip(migraine_events, migraine_events_prev)]
     pct_migraine_severity_change = [pct_change((c if c is not None else 0), (p if p is not None else 0)) for c, p in zip(migraine_sev, migraine_sev_prev)]
     pct_sleep_hours_change       = [pct_change(c, p) for c, p in zip(sleep_hours, sleep_hours_prev)]
-    pct_stress_hours_change      = [pct_change(c, p) for c, p in zip(stress_hours, stress_hours_prev)]
+    pct_stress_events_change     = [pct_change(c, p) for c, p in zip(stress_events, stress_events_prev)]
+    pct_stress_severity_change   = [pct_change((c if c is not None else 0), (p if p is not None else 0)) for c, p in zip(stress_sev, stress_sev_prev)]
     pct_meals_count_change       = [pct_change(c, p) for c, p in zip(meals_count, meals_count_prev)]
 
     ma_migraine_events   = moving_avg(migraine_events, k)
     ma_migraine_severity = moving_avg(migraine_sev, k)
     ma_sleep_hours       = moving_avg(sleep_hours, k)
-    ma_stress_hours      = moving_avg(stress_hours, k)
+    ma_stress_events     = moving_avg(stress_events, k)
+    ma_stress_severity   = moving_avg(stress_sev, k)
     ma_meals_count       = moving_avg(meals_count, k)
 
     out = []
@@ -455,23 +401,195 @@ async def get_weekly_rolling(
             "migraine_events_prev": migraine_events_prev[i],
             "migraine_severity_prev": migraine_sev_prev[i],
             "sleep_hours_prev": sleep_hours_prev[i],
-            "stress_hours_prev": stress_hours_prev[i],
+            "stress_events_prev": stress_events_prev[i],
+            "stress_severity_prev": stress_sev_prev[i],
             "meals_count_prev": meals_count_prev[i],
 
             "pct_migraine_events_change": pct_migraine_events_change[i],
             "pct_migraine_severity_change": pct_migraine_severity_change[i],
             "pct_sleep_hours_change": pct_sleep_hours_change[i],
-            "pct_stress_hours_change": pct_stress_hours_change[i],
+            "pct_stress_events_change": pct_stress_events_change[i],
+            "pct_stress_severity_change": pct_stress_severity_change[i],
             "pct_meals_count_change": pct_meals_count_change[i],
 
             "moving_average_migraine_events": ma_migraine_events[i],
             "moving_average_migraine_severity": ma_migraine_severity[i],
             "moving_average_sleep_hours": ma_sleep_hours[i],
-            "moving_average_stress_hours": ma_stress_hours[i],
+            "moving_average_stress_events": ma_stress_events[i],
+            "moving_average_stress_severity": ma_stress_severity[i],
             "moving_average_meals_count": ma_meals_count[i],
         })
-
     return out
+
+
+@app.get("/api/action-items")
+async def get_action_items(
+    db: db_dependency,
+    user_id: str,
+    window_size: int = Query(4, ge=1, le=26, description="Weeks in current period (default 4)."),
+    use_localtime: bool = Query(False, description="Apply SQLite 'localtime' before week bucketing."),
+    min_sleep_hours: float = Query(7.0, description="Target average sleep hours/day."),
+    min_meals_per_day: float = Query(3.0, description="Target average meals/day."),
+    stress_severity_threshold: float = Query(3.0, description="Threshold for avg stress severity.")
+):
+    # Week bucketing
+    ts_text = cast(Event.event_timestamp, String)
+    ts_norm = func.replace(ts_text, 'T', ' ')
+    week_start = func.date(ts_norm, 'localtime', 'weekday 1', '-7 days') if use_localtime \
+                 else func.date(ts_norm, 'weekday 1', '-7 days')
+
+    # Normalize numeric metrics (sleep hours, meals count) — stress excluded
+    value_std = case(
+        (
+            and_(Event.event_type == EventType.sleep,  Event.numerical_unit == Unit.minutes),
+            cast(Event.numerical_value, Float) / 60.0
+        ),
+        (
+            and_(Event.event_type == EventType.sleep,  Event.numerical_unit == Unit.hours),
+            cast(Event.numerical_value, Float)
+        ),
+        (
+            and_(Event.event_type == EventType.meals,  Event.numerical_unit == Unit.number),
+            cast(Event.numerical_value, Float)
+        ),
+        else_=None
+    )
+
+    base_q = (
+        db.query(
+            week_start.label('week_start_monday'),
+            Event.event_type.label('event_type'),
+            Event.severity.label('severity'),
+            value_std.label('value_std')
+        )
+        .filter(Event.user_id == user_id, Event.event_timestamp.isnot(None))
+    ).subquery()
+
+    weekly_q = (
+        db.query(
+            base_q.c.week_start_monday,
+            func.sum(case((base_q.c.event_type == EventType.migraine, 1), else_=0)).label('migraine_events'),
+            func.avg(case((base_q.c.event_type == EventType.migraine, cast(base_q.c.severity, Float)), else_=None)).label('migraine_avg_severity'),
+            func.sum(case((base_q.c.event_type == EventType.sleep,  base_q.c.value_std), else_=0.0)).label('sleep_hours'),
+            func.sum(case((base_q.c.event_type == EventType.stress, 1), else_=0)).label('stress_events'),
+            func.avg(case((base_q.c.event_type == EventType.stress, cast(base_q.c.severity, Float)), else_=None)).label('stress_avg_severity'),
+            func.sum(case((base_q.c.event_type == EventType.meals,  base_q.c.value_std), else_=0.0)).label('meals_count'),
+        )
+        .group_by(base_q.c.week_start_monday)
+        .order_by(base_q.c.week_start_monday)
+    )
+
+    weekly = weekly_q.all()
+    if not weekly:
+        return {"user_id": user_id, "action_items": [], "summary": {"message": "No data found for user."}}
+
+    # Current vs previous
+    current  = weekly[-window_size:] if len(weekly) >= window_size else weekly[:]
+    previous = weekly[-(2*window_size):-window_size] if len(weekly) >= 2*window_size else []
+
+    def avg_per_day_from_weeks(values):
+        if not values: return None
+        return sum(values) / (7 * len(values))
+
+    def avg_across_weeks(values):
+        nums = [v for v in values if v is not None]
+        return (sum(nums) / len(nums)) if nums else None
+
+    # Current
+    cur_sleep_per_day   = avg_per_day_from_weeks([w.sleep_hours        for w in current])
+    cur_meals_per_day   = avg_per_day_from_weeks([w.meals_count        for w in current])
+    cur_stress_severity = avg_across_weeks       ([w.stress_avg_severity for w in current])
+    cur_mig_events_per_week = (sum([w.migraine_events for w in current]) / len(current)) if current else None
+    cur_mig_severity        = avg_across_weeks   ([w.migraine_avg_severity for w in current])
+
+    # Previous
+    prev_sleep_per_day   = avg_per_day_from_weeks([w.sleep_hours        for w in previous]) if previous else None
+    prev_meals_per_day   = avg_per_day_from_weeks([w.meals_count        for w in previous]) if previous else None
+    prev_stress_severity = avg_across_weeks       ([w.stress_avg_severity for w in previous]) if previous else None
+    prev_mig_events_per_week = (sum([w.migraine_events for w in previous]) / len(previous)) if previous else None
+    prev_mig_severity        = avg_across_weeks   ([w.migraine_avg_severity for w in previous]) if previous else None
+
+    def pct_change(cur, prev):
+        if cur is None or prev is None or prev == 0: return None
+        return (cur - prev) / prev
+
+    sleep_pct_change   = pct_change(cur_sleep_per_day,   prev_sleep_per_day)
+    meals_pct_change   = pct_change(cur_meals_per_day,   prev_meals_per_day)
+    stress_pct_change  = pct_change(cur_stress_severity, prev_stress_severity)
+    mig_events_change  = pct_change(cur_mig_events_per_week, prev_mig_events_per_week)
+    mig_severity_change= pct_change(cur_mig_severity,        prev_mig_severity)
+
+    actions = []
+    if cur_sleep_per_day is not None and cur_sleep_per_day < min_sleep_hours:
+        actions.append({
+            "title": "Get more sleep",
+            "priority": "high" if (sleep_pct_change is not None and sleep_pct_change < -0.1) else "medium",
+            "reason": f"Average sleep is {cur_sleep_per_day:.2f}h/day over {len(current)} weeks, below target {min_sleep_hours:.1f}h/day."
+                      + (f" Down {abs(sleep_pct_change*100):.1f}% vs previous period." if sleep_pct_change and sleep_pct_change < 0 else "")
+        })
+
+    if cur_meals_per_day is not None and cur_meals_per_day < min_meals_per_day:
+        actions.append({
+            "title": "Have more meals",
+            "priority": "medium",
+            "reason": f"Average meals are {cur_meals_per_day:.2f}/day, below target {min_meals_per_day:.1f}/day."
+                      + (f" Down {abs(meals_pct_change*100):.1f}% vs previous period." if meals_pct_change and meals_pct_change < 0 else "")
+        })
+
+    stress_high   = (cur_stress_severity is not None and cur_stress_severity >= stress_severity_threshold)
+    stress_rising = (stress_pct_change is not None and stress_pct_change > 0.10)
+    if stress_high or stress_rising:
+        detail = []
+        if stress_high:
+            detail.append(f"avg stress severity is {cur_stress_severity:.2f} (target ≤ {stress_severity_threshold:.1f})")
+        if stress_rising:
+            detail.append(f"stress severity up {stress_pct_change*100:.1f}% vs previous period")
+        actions.append({
+            "title": "Reduce stress using healthy methods",
+            "priority": "high" if stress_high and stress_rising else "medium",
+            "reason": " ; ".join(detail)
+        })
+
+    migraine_context = {}
+    if cur_mig_events_per_week is not None:
+        migraine_context["migraine_events_per_week"] = round(cur_mig_events_per_week, 2)
+    if cur_mig_severity is not None:
+        migraine_context["migraine_avg_severity"] = round(cur_mig_severity, 2)
+    if mig_events_change is not None:
+        migraine_context["migraine_events_change_pct"] = round(mig_events_change * 100, 1)
+    if mig_severity_change is not None:
+        migraine_context["migraine_severity_change_pct"] = round(mig_severity_change * 100, 1)
+
+    summary = {
+        "period_weeks": len(current),
+        "sleep_hours_per_day": cur_sleep_per_day,
+        "meals_per_day": cur_meals_per_day,
+        "stress_avg_severity": cur_stress_severity, 
+        "previous_period": {
+            "exists": bool(previous),
+            "sleep_hours_per_day": prev_sleep_per_day,
+            "meals_per_day": prev_meals_per_day,
+            "stress_avg_severity": prev_stress_severity,
+        },
+        "percent_changes": {
+            "sleep": sleep_pct_change,
+            "meals": meals_pct_change,
+            "stress_severity": stress_pct_change,
+            "migraine_events": mig_events_change,
+            "migraine_severity": mig_severity_change,
+        },
+        "migraine_context": migraine_context,
+        "bucket_range": {
+            "start_week": weekly[0].week_start_monday,
+            "end_week": weekly[-1].week_start_monday
+        }
+    }
+
+    return {
+        "user_id": user_id,
+        "action_items": actions,
+        "summary": summary
+    }
 
 
 # @app.post("/api/export_user_to_fhir/{user_id}", status_code=200)
@@ -672,43 +790,22 @@ async def populate_large_data(
     seed: int | None = Query(42, description="Optional random seed for reproducibility."),
     reset: bool = Query(False, description="If true, delete existing events in the generated date range for these users before repopulating.")
 ):
-    """
-    Populate synthetic data for 4 users as a *daily record log* with randomness and plausible correlations:
-      - Every day: 1 sleep (hours), 1 stress (hours + severity), 1 meals row (count=2..4)
-      - 0–2 migraines per day; probability & severity biased by low sleep / high stress
-      - Units match weekly aggregation logic (sleep/stress in hours, meals count, migraine minutes+severity)
-
-    Query params:
-      - days: integer number of days to populate (default 56)
-      - seed: RNG seed (default 42; set None for non-reproducible randomness)
-      - reset: delete existing events in the date range for these users before inserting
-    """
-
-    # --- Randomness control ---
     if seed is not None:
         random.seed(seed)
 
-    # --- Create or reuse users ---
     names = ['Jessica', 'Albert', 'John', 'Susan']
     users: list[User] = []
     for n in names:
         existing = db.query(User).filter(User.name == n).first()
-        if existing:
-            users.append(existing)
-        else:
-            u = User(name=n)
-            db.add(u)
-            db.flush()
-            users.append(u)
-
+        users.append(existing if existing else User(name=n))
+        if not existing:
+            db.add(users[-1]); db.flush()
     user_ids = [u.id for u in users]
 
-    # --- Date range (last `days` days including today) ---
     today = date.today()
     start_date = today - timedelta(days=days - 1)
     end_date = today
 
-    # --- Optional reset: delete existing events in range for these users ---
     if reset:
         for uid in user_ids:
             db.query(Event).filter(
@@ -720,56 +817,34 @@ async def populate_large_data(
             ).delete(synchronize_session=False)
         db.flush()
 
-    # --- Helpers for random but plausible daily logs ---
     def dt_at(day: date, hour: int, minute: int = 0) -> datetime:
         return datetime.combine(day, time(hour=hour, minute=minute))
 
     def sample_sleep_hours() -> float:
-        # 6–9 hours, uniform with rounding to 0.1h for variability
         return round(random.uniform(6.0, 9.0), 1)
 
-    def sample_stress_hours() -> float:
-        # Gaussian around ~2.5h (σ=1.5), clipped to [0, 6], rounded
-        val = max(0.0, min(6.0, random.gauss(2.5, 1.5)))
-        return round(val, 1)
-
     def sample_severity_stress() -> Severity:
-        # Weighted: favor low/med, occasional high peaks
-        weights = [0.25, 0.25, 0.25, 0.15, 0.10]  # low .. high
+        # Weighted: favor low/med, occasional high
+        weights = [0.25, 0.25, 0.25, 0.15, 0.10]  # low..high
         return random.choices(list(Severity), weights=weights, k=1)[0]
 
-    def migraine_probability(sleep_hours: float, stress_hours: float, stress_sev: Severity) -> float:
-        # Base 0.15; bumps with low sleep / high stress / high severity; capped at 0.6
+    def migraine_probability(sleep_hours: float, stress_sev: Severity) -> float:
         p = 0.15
-        if sleep_hours < 6.0:
-            p += 0.10
-        if stress_hours > 3.0:
-            p += 0.10
-        if stress_sev >= Severity.med_high:
-            p += 0.05
+        if sleep_hours < 6.0: p += 0.10
+        if stress_sev >= Severity.med_high: p += 0.10
         return min(max(p, 0.0), 0.6)
 
-    def sample_migraine_severity(sleep_hours: float, stress_hours: float, stress_sev: Severity) -> Severity:
-        # Increase severity mass under low sleep/high stress/high stress severity
+    def sample_migraine_severity(sleep_hours: float, stress_sev: Severity) -> Severity:
         bias = 0
-        if sleep_hours < 6.0:
-            bias += 1
-        if stress_hours > 3.0:
-            bias += 1
-        if stress_sev >= Severity.med_high:
-            bias += 1
-        base_weights = [0.30, 0.25, 0.25, 0.12, 0.08]  # low..high
+        if sleep_hours < 6.0: bias += 1
+        if stress_sev >= Severity.med_high: bias += 1
+        base = [0.30, 0.25, 0.25, 0.12, 0.08]
         for _ in range(bias):
-            base_weights = [
-                max(w - 0.03, 0.01) if i < 2 else min(w + 0.03, 0.60)
-                for i, w in enumerate(base_weights)
-            ]
-        total = sum(base_weights)
-        weights = [w / total for w in base_weights]
+            base = [max(w - 0.03, 0.01) if i < 2 else min(w + 0.03, 0.60) for i, w in enumerate(base)]
+        s = sum(base); weights = [w/s for w in base]
         return random.choices(list(Severity), weights=weights, k=1)[0]
 
     def sample_migraine_duration_minutes(sev: Severity) -> int:
-        # Duration loosely correlated with severity
         ranges = {
             Severity.low:      (10, 40),
             Severity.low_med:  (20, 60),
@@ -779,46 +854,38 @@ async def populate_large_data(
         }
         return random.randint(*ranges[sev])
 
-    # --- Populate per user per day ---
     for uid in user_ids:
         day = start_date
         while day <= end_date:
-            # Sleep
+            # Sleep (hours per day)
             sleep_hours = sample_sleep_hours()
-            sleep_event = Event(
+            db.add(Event(
                 user_id=uid,
                 system=VARS['sleepSystem'],
                 code=VARS['sleepCode'],
                 event_type=EventType.sleep,
-                numerical_value=int(round(sleep_hours)),  # store integer hours
+                numerical_value=int(round(sleep_hours)),
                 numerical_unit=Unit.hours,
                 description=f"Sleep duration: {sleep_hours}h",
                 event_timestamp=dt_at(day, 23, random.randint(0, 59)),
                 creation_timestamp=dt_at(day, 23, 59)
-            )
-            db.add(sleep_event)
+            ))
 
-            # Stress
-            stress_hours = sample_stress_hours()
             stress_sev = sample_severity_stress()
-            stress_event = Event(
+            db.add(Event(
                 user_id=uid,
                 system=VARS['stressSystem'],
                 code=VARS['stressCode'],
                 event_type=EventType.stress,
                 severity=stress_sev,
-                numerical_value=int(round(stress_hours)),
-                numerical_unit=Unit.hours,
-                description=f"Stress exposure: {stress_hours}h, severity {int(stress_sev)}",
+                description=f"Daily stress rating: {int(stress_sev)}",
                 event_timestamp=dt_at(day, 16, random.randint(0, 59)),
                 creation_timestamp=dt_at(day, 16, 59)
-            )
-            db.add(stress_event)
+            ))
 
-            # Meals (ONE ROW per day): random count 2..4
+            # Meals (one row/day; count 2..4)
             meals_count = random.randint(2, 4)
-            # Use a midday timestamp with slight jitter; count stored in numerical_value
-            meal_event = Event(
+            db.add(Event(
                 user_id=uid,
                 system=VARS['mealSystem'],
                 code=VARS['mealCode'],
@@ -828,47 +895,35 @@ async def populate_large_data(
                 description=f"Meals eaten: {meals_count}",
                 event_timestamp=dt_at(day, 12, random.randint(0, 30)),
                 creation_timestamp=dt_at(day, 12, random.randint(0, 30))
-            )
-            db.add(meal_event)
+            ))
 
-            # Migraines (0–2 per day with correlated probability)
-            p = migraine_probability(sleep_hours, stress_hours, stress_sev)
-            occurrences = 0
-            if random.random() < p:
-                occurrences += 1
-            if random.random() < (p / 2.0):
-                occurrences += 1
-
+            # Migraines (0–2/day; depends on sleep + stress severity)
+            p = migraine_probability(sleep_hours, stress_sev)
+            occurrences = (1 if random.random() < p else 0) + (1 if random.random() < (p/2.0) else 0)
             for k in range(occurrences):
-                mig_sev = sample_migraine_severity(sleep_hours, stress_hours, stress_sev)
-                duration_min = sample_migraine_duration_minutes(mig_sev)
-                base_hour = 10 if k == 0 else 19  # stagger morning/evening
-                migraine_event = Event(
+                msev = sample_migraine_severity(sleep_hours, stress_sev)
+                dur  = sample_migraine_duration_minutes(msev)
+                base_hour = 10 if k == 0 else 19
+                db.add(Event(
                     user_id=uid,
                     system=VARS['migraineSystem'],
                     code=VARS['migraineCode'],
                     event_type=EventType.migraine,
-                    severity=mig_sev,
-                    numerical_value=duration_min,
+                    severity=msev,
+                    numerical_value=dur,
                     numerical_unit=Unit.minutes,
-                    description=f"Migraine ({int(mig_sev)}), {duration_min} minutes",
+                    description=f"Migraine ({int(msev)}), {dur} minutes",
                     event_timestamp=dt_at(day, base_hour, random.randint(0, 59)),
                     creation_timestamp=dt_at(day, base_hour, 59)
-                )
-                db.add(migraine_event)
+                ))
 
             day += timedelta(days=1)
 
     db.commit()
-
     return {
-        "status": "OK",
-        "users": names,
-        "start_date": str(start_date),
-        "end_date": str(end_date),
-        "days_populated": days,
-        "reset": reset,
-        "seed": seed
+        "status": "OK", "users": names,
+        "start_date": str(start_date), "end_date": str(end_date),
+        "days_populated": days, "reset": reset, "seed": seed
     }
 
 
