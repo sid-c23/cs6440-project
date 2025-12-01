@@ -212,9 +212,17 @@ function submissionButton() {
   }
 }
 
-async function submitDailyRecord() {
+ async function submitDailyRecord() {
   try {
     const a = answers.value; // shortcut
+
+    if (a[1] === "Yes") {
+      const date = a[0];
+      const time = a[2];
+      if (date && time) {
+        a.migraine_datetime = `${date}T${time}`;
+      }
+    }
 
     if (a[1] === "Yes") {
       await fetch(`/api/event?user_id=${userId}`, {
@@ -225,7 +233,8 @@ async function submitDailyRecord() {
           code: "LA15141-7",
           event_type: "migraine",
           severity: parseInt(a[3][0]), // “3: moderately” → 3
-          description: `Migraine at ${a.migraine_datetime}`
+          description: `Migraine at ${a.migraine_datetime}`,
+          event_timestamp: a.migraine_datetime
         }),
       });
     }
@@ -239,7 +248,8 @@ async function submitDailyRecord() {
           code: "Z73.3",
           event_type: "stress",
           severity: parseInt(a[4][0]),
-          description: "Daily stress rating"
+          description: "Daily stress rating",
+          event_timestamp: `${a[0]}T00:00:00`
         }),
       });
     }
@@ -254,7 +264,8 @@ async function submitDailyRecord() {
           event_type: "sleep",
           numerical_value: parseInt(a[5]),
           numerical_unit: "hours",
-          description: "Hours slept"
+          description: "Hours slept",
+          event_timestamp: `${a[0]}T00:00:00`
         }),
       });
     }
@@ -266,10 +277,11 @@ async function submitDailyRecord() {
         body: JSON.stringify({
           system: "ICD-10",
           code: "Y93.G1",
-          event_type: "meal",
+          event_type: "meals",
           numerical_value: parseInt(a[6]),
           numerical_unit: "number",
-          description: "Meals eaten"
+          description: "Meals eaten",
+          event_timestamp: `${a[0]}T00:00:00`
         }),
       });
     }
@@ -286,6 +298,7 @@ async function submitDailyRecord() {
     alert("Error saving your daily migraine record. Please try again.");
   }
 }
+
 
 const exportRecords = async () => {
   try {
@@ -838,5 +851,3 @@ const preventionWeek = computed(() => {
 }
 
 </style>
-
-
