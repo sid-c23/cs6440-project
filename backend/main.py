@@ -20,6 +20,7 @@ from fhirclient.models.patient import Patient
 from fhirclient.models.observation import Observation
 from fhirclient.models.encounter import Encounter
 from fhirclient.models.fhirreference import FHIRReference
+from fhirclient.models.bundle import Bundle
 
 Base.metadata.create_all(bind=engine)
 
@@ -675,18 +676,6 @@ async def get_action_items(
     }
 
 
-# @app.post("/api/export_user_to_fhir/{user_id}", status_code=200)
-# async def export_user_to_fhir(db: db_dependency, user_id: str):
-#     user = db.query(User).filter(User.id == user_id).first()
-#     patient = convert_user_to_fhir(user)
-#     settings = {
-#         'app_id': 'mitigate_app',
-#         'api_base': 'https://hapi.fhir.org/baseR4'
-#     }
-#     smart = client.FHIRClient(settings=settings)
-#     created = patient.create(smart.server)
-#     return created
-
 @app.get("/api/get_patient_info_from_fhir/{user_id}", status_code=200)
 async def get_patient_info_from_fhir(user_id: str):
     settings = {
@@ -724,16 +713,21 @@ async def get_patient_info_from_fhir(user_id: str):
 
 
 @app.post("/api/export_patient_data_to_fhir/{user_id}", status_code=200)
-async def export_patient_data_to_fhir(db: db_dependency, user_id: str):
+async def export_patient_data_to_fhir(
+    db: db_dependency,
+    user_id: str,
+    chunk_size: int = Query(75, ge=1, le=250, description="Max Observation entries per batch POST.")
+):
     """
-    Exports all of a user's data (patient data and all observation data) to the demo HAPI FHIR server.
-    First, the Patient is created on the FHIR server.
-    Second, the Observation data is created on the FHIR server.
+    Export all of a user's data to the demo HAPI FHIR server using FHIR Bundle(type='batch').
+    1) Create or reuse Patient.
+    2) POST Observations in chunked batch Bundles to reduce HTTP calls.
     """
     settings = {
         'app_id': 'mitigate_app',
         'api_base': 'https://hapi.fhir.org/baseR4'
     }
+
     # -- Pull local data
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -744,47 +738,84 @@ async def export_patient_data_to_fhir(db: db_dependency, user_id: str):
     # -- Build FHIRClient
     smart = client.FHIRClient(settings=settings)
 
-    # -- Create or reuse Patient
+    # -- Create or reuse Patient on server
     patient_resource: Patient = convert_user_to_fhir(user)
-
     existing_patients = Patient.where(struct={'identifier': user_id}).perform_resources(smart.server)
-
     if existing_patients:
-            patient = existing_patients[0].as_json()
-            patient_id = patient['id']
-            reused = True
+        patient_json = existing_patients[0].as_json()
+        patient_id = patient_json['id']
+        reused = True
     else:
-        patient = patient_resource.create(smart.server)    # POST /Patient
-        patient_id = patient['id']
+        created_patient_json = patient_resource.create(smart.server)  # POST /Patient
+        patient_id = created_patient_json['id']
         reused = False
 
-    # -- Create Observations
-    created_obs_ids: List[str] = []
-    errors: List[Dict[str, Any]] = []
-
+    # -- Convert Events -> Observation JSON; link to Patient
+    obs_jsons: List[Dict[str, Any]] = []
     for ev in events:
         try:
             obs: Observation = convert_event_to_fhir(ev)
-            # Link Observation to Patient
             obs.subject = FHIRReference({'reference': f'Patient/{patient_id}'})
-            created_obs = obs.create(smart.server)          # POST /Observation
-            created_obs_ids.append(created_obs)
+            obs_jsons.append(obs.as_json())
+        except Exception:
+            continue
+
+    created_obs_locations: List[str] = []
+    errors: List[Dict[str, Any]] = []
+
+    # -- Helper to POST batch bundle in one HTTP request
+    def post_batch(entries: List[Dict[str, Any]]):
+        bundle = Bundle({'type': 'batch', 'entry': entries})
+        # Explicitly set headers for FHIR JSON
+        return smart.server.session.post(
+            smart.server.base_uri,
+            headers={"Content-Type": "application/fhir+json"},
+            json=bundle.as_json()
+        )
+
+    # -- Chunk and POST
+    for i in range(0, len(obs_jsons), chunk_size):
+        chunk = obs_jsons[i:i + chunk_size]
+        entries = [
+            {
+                'resource': obs,
+                'request': {'method': 'POST', 'url': 'Observation'}
+            } for obs in chunk
+        ]
+        try:
+            resp = post_batch(entries)
+            resp_text = resp.text.strip()
+            resp_json = resp.json() if resp_text else {}
+
+            if not resp_json or 'entry' not in resp_json:
+                errors.append({
+                    "error": "Empty or invalid response from FHIR server",
+                    "status_code": resp.status_code,
+                    "raw_text": resp_text[:200]
+                })
+                continue
+
+            for entry in resp_json.get('entry', []):
+                r = entry.get('response', {})
+                status = r.get('status', '')
+                location = r.get('location')
+                if status.startswith('201') and location:
+                    created_obs_locations.append(location)
+                else:
+                    errors.append({'status': status, 'outcome': r.get('outcome')})
         except Exception as e:
-            errors.append({
-                "event_id": str(ev.id),
-                "error": str(e)
-            })
+            errors.append({'error': str(e)})
 
     return {
         "ok": True,
         "patient": {
             "id": patient_id,
             "reused": reused,
-            "identifiers": [iden for iden in (patient['identifier'] or [])]
+            "identifiers": [iden for iden in (patient_json.get('identifier') if reused else (created_patient_json.get('identifier') or []))]
         },
         "observations": {
-            "created_count": len(created_obs_ids),
-            "ids": created_obs_ids
+            "created_count": len(created_obs_locations),
+            "locations": created_obs_locations
         },
         "errors": errors
     }
