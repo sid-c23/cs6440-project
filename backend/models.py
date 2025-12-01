@@ -43,6 +43,8 @@ class EventType(str, enum.Enum):
     stress = 'stress'
     sleep = 'sleep'
     meals = 'meal'
+    exercise = 'exercise'
+    medication = 'medication'
 
 class Unit(str, enum.Enum):
     hours = 'hours'
