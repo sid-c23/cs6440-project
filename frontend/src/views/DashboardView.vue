@@ -286,6 +286,34 @@ function submissionButton() {
       });
     }
 
+    if (a[7] === "Yes") {
+      await fetch(`/api/event?user_id=${userId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system: "ICD-10",
+          code: "Y93.A9",        // DOUBLE CHECK ON BACKEND
+          event_type: "exercise",
+          description: "Exercise performed",
+          event_timestamp: `${a[0]}T00:00:00`
+        }),
+      });
+    }
+
+    if (a[8] === "Yes") {
+      await fetch(`/api/event?user_id=${userId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system: "ICD-10",
+          code: "Z79.899",        // DOUBLE
+          event_type: "medication",
+          description: "Took remedial medication",
+          event_timestamp: `${a[0]}T00:00:00`
+        }),
+      });
+    }
+
     alert("Your daily record has been saved!");
 
     idx.value = 0
@@ -343,7 +371,7 @@ async function activateDashboard() {
   }
 
   //loadWeeklyInsights()
-  displayStats()
+  //displayStats()
 }
 
 
@@ -392,7 +420,7 @@ onMounted(async () => {
 async function getTriggerData() {
   try {
     const res = await fetch(`/api/triggers?user_id=${userId}`);
-    if (!res.ok) throw new Error("Failed to fet triggers");
+    if (!res.ok) throw new Error("Failed to fetch triggers");
 
     const data = await res.json();
 
@@ -401,6 +429,8 @@ async function getTriggerData() {
     const sleep = [];
     const stress = [];
     const meals = [];
+    const exercise = [];
+    const medication = [];
 
     data.forEach(event => {
       const date = event.event_timestamp
@@ -408,30 +438,31 @@ async function getTriggerData() {
         : null;
 
       if (event.event_type === "sleep") {
-        sleep.push({
-          date,
-          hours: event.numerical_value
-        });
+        sleep.push({ date, hours: event.numerical_value });
       }
 
       if (event.event_type === "stress") {
-        stress.push({
-          date,
-          rating: event.severity
-        });
+        stress.push({ date, rating: event.severity });
       }
 
       if (event.event_type === "meal" || event.event_type === "meals") {
-        meals.push({
-          date,
-          count: event.numerical_value
-        });
+        meals.push({ date, count: event.numerical_value });
+      }
+
+      if (event.event_type === "exercise") {
+        exercise.push({ date });
+      }
+
+      if (event.event_type === "medication") {
+        medication.push({ date });
       }
     });
 
     weeklyStats.value.sleep = sleep;
     weeklyStats.value.stress = stress;
     weeklyStats.value.meals = meals;
+    weeklyStats.value.exercise = exercise;
+    weeklyStats.value.medication = medication;
 
     return true;
 
@@ -440,6 +471,7 @@ async function getTriggerData() {
     return false;
   }
 }
+
 
 
 const weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -565,6 +597,8 @@ async function getRollingMigraines() {
       events: latest.moving_average_migraine_events,
       severity: latest.moving_average_migraine_severity
     };
+
+    displayStats();
 
     //console.log("Updated weeklyStats.migraines:", weeklyStats.value.migraines);
 
