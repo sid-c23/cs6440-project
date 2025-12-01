@@ -21,6 +21,9 @@
             <button class="exportRecords" @click="exportRecords">
                 Send migraine history to my doctor
             </button>
+            <button class="exportRecords" @click="viewFhirData">
+                See my health record
+            </button>
         </div>
       </template>
 
@@ -36,10 +39,7 @@
     <main class="content">
       <!-- Weekly Tip -->
       <section class="weekly-tip">
-        <p>
-          weekly insight here.
-          <strong>weekly tip here!</strong>
-        </p>
+        <p v-html="weeklyTip"></p>
       </section>
 
       <!-- Weekly Insights -->
@@ -277,7 +277,7 @@ function submissionButton() {
         body: JSON.stringify({
           system: "ICD-10",
           code: "Y93.G1",
-          event_type: "meals",
+          event_type: "meal",
           numerical_value: parseInt(a[6]),
           numerical_unit: "number",
           description: "Meals eaten",
@@ -327,8 +327,13 @@ async function activateDashboard() {
     const resMigraines = await fetch(`/api/migraines?user_id=${userId}`)
     if (resMigraines.ok) migraines.value = await resMigraines.json()
 
-    const resTriggers = await fetch(`/api/triggers?user_id=${userId}`)
-    if (resTriggers.ok) triggers.value = await resTriggers.json()
+    //const resTriggers = await fetch(`/api/triggers?user_id=${userId}`)
+    //if (resTriggers.ok) triggers.value = await resTriggers.json()
+    await getTriggerData();
+    await getRollingMigraines(); 
+    console.log("sleep grouped:", weeklyStats.value.sleep);
+    console.log("stress grouped:", weeklyStats.value.stress);
+    console.log("meals grouped:", weeklyStats.value.meals);
 
   } catch (err) {
     console.error(err)
@@ -337,11 +342,105 @@ async function activateDashboard() {
     loading.value = false
   }
 
-  loadWeeklyInsights()
+  //loadWeeklyInsights()
   displayStats()
 }
 
-onMounted(() => activateDashboard())
+
+const weeklyTip = ref("");
+const weeklyInsight = ref([]);
+
+async function getWeeklyTip() {
+  const res = await fetch(
+    `/api/action-items?user_id=${userId}&window_size=2&use_localtime=false&min_sleep_hours=7&min_meals_per_day=3&stress_severity_threshold=3`
+  );
+  if (!res.ok) return;
+
+  const data = await res.json();
+
+  weeklyInsight.value = data.action_items || [];
+
+  if (!data.summary?.percent_changes) return;
+
+  const pct = data.summary.percent_changes;
+
+  const changes = [
+    { key: "sleep", value: pct.sleep },
+    { key: "meals", value: pct.meals },
+    { key: "stress", value: pct.stress_severity }
+  ];
+
+  const mostChanged = changes.sort((a, b) => (b.value || 0) - (a.value || 0))[0];
+
+  const item = weeklyInsight.value.find(i =>
+    i.title.toLowerCase().includes(mostChanged.key)
+  );
+
+  if (!item) return;
+
+  weeklyTip.value = `${item.reason} <strong>${item.title}!</strong>`;
+}
+
+
+onMounted(async () => {
+  await activateDashboard();
+  await getWeeklyTip();
+});
+
+
+
+async function getTriggerData() {
+  try {
+    const res = await fetch(`/api/triggers?user_id=${userId}`);
+    if (!res.ok) throw new Error("Failed to fet triggers");
+
+    const data = await res.json();
+
+    console.log("Fetched trigger data:", data);
+
+    const sleep = [];
+    const stress = [];
+    const meals = [];
+
+    data.forEach(event => {
+      const date = event.event_timestamp
+        ? event.event_timestamp.split("T")[0]
+        : null;
+
+      if (event.event_type === "sleep") {
+        sleep.push({
+          date,
+          hours: event.numerical_value
+        });
+      }
+
+      if (event.event_type === "stress") {
+        stress.push({
+          date,
+          rating: event.severity
+        });
+      }
+
+      if (event.event_type === "meal" || event.event_type === "meals") {
+        meals.push({
+          date,
+          count: event.numerical_value
+        });
+      }
+    });
+
+    weeklyStats.value.sleep = sleep;
+    weeklyStats.value.stress = stress;
+    weeklyStats.value.meals = meals;
+
+    return true;
+
+  } catch (err) {
+    console.error("Error parsing trigger data", err);
+    return false;
+  }
+}
+
 
 const weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 const migraineDays = ref([false, false, false, false, false, false, false])
@@ -425,57 +524,83 @@ const weeklyStats = ref({
 
 async function loadWeeklyInsights() {
   weeklyStats.value = {
-    migraines: {
-      total: 2,
-      avg_intensity: 3.5,
-      morning: 1,
-      afternoon: 1,
-      night: 0
-    },
-    sleep: [
-      { date: "2025-11-27", hours: 6 },
-      { date: "2025-11-28", hours: 7 }
-    ],
-    stress: [
-      { date: "2025-11-27", rating: 4 }
-    ],
-    //NEW mock data for meals
-    meals: [
-      { date: "2025-11-27", count: 2 },
-      { date: "2025-11-28", count: 3 }
-    ],
-    exercise: [
-      { date: "2025-11-28", value: true } 
-    ],
-    medication: [
-       { date: "2025-11-26", value: true }
-    ]
+    sleep: weeklyStats.value.sleep,
+    stress: weeklyStats.value.stress,
+    meals: weeklyStats.value.meals,
+    exercise: weeklyStats.value.exercise,
+    medication: weeklyStats.value.medication
+  };
+}
+
+async function getRollingMigraines() {
+  try {
+    const res = await fetch(
+      `/api/weekly/rolling?user_id=${userId}&window_size=1&use_localtime=false`
+    );
+
+    if (!res.ok) {
+      console.error("Rolling migraine API failed:", res.status);
+      return;
+    }
+
+    const data = await res.json();
+
+    //console.log("RAW rolling migraine data:", data);
+
+    if (!Array.isArray(data) || data.length === 0) {
+      console.warn("Rolling migraine API returned empty array");
+      return;
+    }
+
+    const latest = data[data.length - 1];
+    //console.log("Latest rolling migraine entry:", latest);
+
+    //console.log("week_start_monday:", latest?.week_start_monday);
+    //console.log("moving_average_migraine_events:", latest?.moving_average_migraine_events);
+    //console.log("moving_average_migraine_severity:", latest?.moving_average_migraine_severity);
+
+    // Update weeklyStats AFTER logging
+    weeklyStats.value.migraines = {
+      week: latest.week_start_monday,
+      events: latest.moving_average_migraine_events,
+      severity: latest.moving_average_migraine_severity
+    };
+
+    //console.log("Updated weeklyStats.migraines:", weeklyStats.value.migraines);
+
+  } catch (err) {
+    console.error("Error in getRollingMigraines:", err);
   }
 }
 
 
 let migraineChart = null;
-function displayStats() {
 
+function displayStats() {
   if (currTab.value !== "migraines") return;
 
   const el = document.getElementById("migraineChart");
   if (!el) return;
 
+  const m = weeklyStats.value.migraines;
+  if (!m || !m.week) {
+    console.warn("Migraine stats not ready");
+    return;
+  }
 
-  const migraineData = weeklyStats.value.migraines || {};
-  const count = migraineData.total || 0;
-  const avgIntensity = migraineData.avg_intensity || 0;
-
+  if (migraineChart) {
+    migraineChart.destroy();
+    migraineChart = null;
+  }
 
   migraineChart = new Chart(el, {
     type: "bar",
     data: {
-      labels: ["Total Migraines", "Avg Intensity"],
+      labels: ["Migraine Events", "Avg Intensity"],   // 👈 TWO LABELS ONLY
       datasets: [
         {
           label: "Migraine Stats",
-          data: [count, avgIntensity],
+          data: [m.events, m.severity],              // 👈 TWO VALUES
           backgroundColor: ["#008080", "#4db6ac"]
         }
       ]
@@ -484,29 +609,71 @@ function displayStats() {
       responsive: true,
       plugins: {
         legend: { display: false }
+      },
+      scales: {
+        y: { beginAtZero: true }
       }
     }
   });
 }
 
+
+
+
+function getWeek() {
+  const days = [];
+  const now = new Date();
+  const utcToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(utcToday);
+    d.setUTCDate(utcToday.getUTCDate() - i);
+    days.push(d.toISOString().split("T")[0]);
+  }
+
+  return days;
+}
+
 let triggerChart = null;
+
 function displayTriggers() {
   if (currTab.value !== "triggers") return;
 
   const el = document.getElementById("triggerChart");
   if (!el) return;
-  if (triggerChart) return;
 
-  const sleepHours = weeklyStats.value.sleep.map(s => s.hours);
-  const stressLevels = weeklyStats.value.stress.map(s => s.rating);
-  const mealCt = weeklyStats.value.meals.map(m => m.count);
+  if (triggerChart) {
+    triggerChart.destroy();
+    triggerChart = null;
+  }
 
-  const labels = weeklyStats.value.sleep.map(s => 
-    new Date(s.date).toLocaleDateString("en-US", {
+  const last7 = getWeek();
+
+  const sleepMap = Object.fromEntries(
+    weeklyStats.value.sleep.map(s => [s.date, s.hours])
+  );
+
+  const stressMap = Object.fromEntries(
+    weeklyStats.value.stress.map(s => [s.date, s.rating])
+  );
+
+  const mealMap = Object.fromEntries(
+    weeklyStats.value.meals.map(m => [m.date, m.count])
+  );
+
+  const sleepHours = last7.map(day => sleepMap[day] ?? 0);
+  const stressLevels = last7.map(day => stressMap[day] ?? 0);
+  const mealCounts = last7.map(day => mealMap[day] ?? 0);
+
+  const labels = last7.map(d =>
+    new Date(d).toLocaleDateString("en-US", {
       month: "short",
       day: "numeric"
     })
   );
+
+  const sleepBaseline = last7.map(() => 7);
+  const mealBaseline = last7.map(() => 3);
 
   triggerChart = new Chart(el, {
     type: "bar",
@@ -525,14 +692,12 @@ function displayTriggers() {
         },
         {
           label: "Daily Meals",
-          data: mealCt,
+          data: mealCounts,
           backgroundColor: "#81d4fa"
         },
         {
           label: "Recommended Sleep",
-          data: [7, 7],
-          xAxisID: "baseline",
-          spanGaps: true, 
+          data: sleepBaseline,
           type: "line",
           borderColor: "#00695c",
           borderWidth: 2,
@@ -541,8 +706,7 @@ function displayTriggers() {
         },
         {
           label: "Recommended Daily Meals",
-          data: [3, 3],
-          xAxisID: "baseline",
+          data: mealBaseline,
           type: "line",
           borderColor: "#0277bd",
           borderWidth: 2,
@@ -554,34 +718,15 @@ function displayTriggers() {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      layout: {
-        padding: { top: 5 }
-      },
       plugins: {
-        legend: { 
+        legend: {
           display: true,
           position: "top",
-          align: "start",
-          labels: {
-            usePointStyle: true,
-            padding: 12,
-            font: { size: 12 }
-          }
+          align: "start"
         }
       },
       scales: {
-        y: {
-          beginAtZero: true,
-          ticks: { font: { size: 12} }
-        },
-        x: {
-          ticks: { font: { size: 12 } }
-        },
-        baseline: {
-          type: "category",
-          labels,
-          display: false
-        }
+        y: { beginAtZero: true }
       }
     }
   });
@@ -613,6 +758,23 @@ const preventionWeek = computed(() => {
   return week;
 });
 
+async function viewFhirData() {
+  try {
+    const res = await fetch(`/api/get_patient_info_from_fhir/${userId}`, {
+      method: "GET",
+      headers: { "accept": "application/json" }
+    });
+
+    if (!res.ok) throw new Error("Failed to fetch FHIR data");
+
+    const data = await res.json();
+
+    alert(JSON.stringify(data, null, 2));  // use popup to show for grading/proof of concept
+  } catch (err) {
+    console.error(err);
+    alert("Error fetching FHIR data.");
+  }
+}
 
 </script>
 
